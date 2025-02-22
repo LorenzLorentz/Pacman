@@ -2,6 +2,7 @@ import os
 import random
 import copy
 from collections import deque
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -15,12 +16,6 @@ from utils.valid_action import *
 from utils.data_process import *
 
 device = torch.device("cuda" if torch.cuda() else "cpu")
-
-class AIState(Enum):
-    COLLECT = "COLLECT"
-    ESCAPE = "ESCAPE"
-    BONUS = "BONUS"
-    GETOUT = "GETOUT"
 
 class MCTSNode:
     def __init__(self, env, gamestate, state, extra, done, player, parent=None, prior_prob=0):
@@ -189,6 +184,28 @@ class MCTS:
             node.W += value
             node.Q = node.W / node.N
 
+    def search(self):
+        # 递归调用
+        policy_prob = None
+        value = None
+        return policy_prob, value
+
+# def search:
+#   # 递归函数
+#   if done: return v
+#   if policy is empty:
+#       action_prob, value = net(state)
+#       self.policy = softmmax(action_prob.correct())
+#       return Vs
+#       # 此后策略不会变化，但是价值会更新
+#   else:
+#       # PUCT
+#       # find max(\lambda \pi + self.q) # 初始q置零
+#       v = search(max)
+#       self.count + 1
+#       self.q += (v-q)/n # 增量更新
+#       return v
+
 class ResidualBlock(nn.Module):
     def __init__(self, num_filters):
         super(ResidualBlock, self).__init__()
@@ -206,11 +223,11 @@ class ResidualBlock(nn.Module):
         return out
 
 class ValueNet(nn.Module):
-    """
-      - Feature: Conv -> BN -> ReLU + ResidualBlock
-      - Policy Head: Conv(2 filters) -> BN -> ReLU -> Flatten -> FC -> (log)softmax
-      - Value Head: Conv(1 filter) -> BN -> ReLU -> Flatten -> FC -> ReLU -> FC -> Tanh
-    """
+
+    # Feature: Conv -> BN -> ReLU + ResidualBlock
+    # Policy Head: Conv(2 filters) -> BN -> ReLU -> Flatten -> FC -> (log)softmax
+    # Value Head: Conv(1 filter) -> BN -> ReLU -> Flatten -> FC -> ReLU -> FC -> Tanh
+
     def __init__(
         self,
         in_channels=7,
@@ -471,6 +488,7 @@ class GhostAgent:
 #       self.count + 1
 #       self.q += (v-q)/n # 增量更新
 #       return v
+#
 # def learn:
 #   for batches:
 #       net_fit(traj) # 训练theta
@@ -540,3 +558,130 @@ class AlphaZeroTrainer:
                 print(f"NEW  BEST with acc {score}")
                 self.pacman.save_model()
                 self.ghost.save_model()
+
+# def search:
+#   # 递归函数
+#   if done: return v
+#   if policy is empty:
+#       action_prob, value = net(state)
+#       self.policy = softmmax(action_prob.correct())
+#       return Vs
+#       # 此后策略不会变化，但是价值会更新
+#   else:
+#       # PUCT
+#       # find max(\lambda \pi + self.q) # 初始q置零
+#       v = search(max)
+#       self.count + 1
+#       self.q += (v-q)/n # 增量更新
+#       return v
+
+class MCTSNode:
+    def __init__(self, env, done, parent):
+        self.state=env.game_state()
+        self.env=copy.deepcopy(env)
+        self.state_dict=self.state.gamestate_to_statedict()
+        self.done=done
+
+        self.parent=parent
+        self.children={}   # dict: action -> child
+
+        self.N=0
+        self.P={}          # dict: action -> prob
+        self.W=0.0         # accum prob
+        self.Q=0.0         # ave prob
+
+    def is_terminal(self):
+        return self.done
+
+    def is_expanded(self):
+        return len(self.P)>0
+    
+    def expand(self, pacman, ghost):
+        """
+        使用神经网络扩展当前节点：
+          net(state) 返回 (action_logits, value)
+          - action_logits: dict，键为动作，值为对应的原始分数
+          - value: 对当前状态的评估值（由网络直接给出）
+        """
+        action_logits_pacman, value_pacman = pacman(self.state)
+        action_logits_ghost, value_ghost = ghost(self.state)
+
+        actions_pacman=list(action_logits_pacman.keys())
+        actions_ghost=list(action_logits_ghost.keys())
+
+        logits_pacman = np.array([action_logits_pacman[a] for a in actions_pacman])
+        logits_ghost = np.array([action_logits_ghost[a] for a in actions_ghost])
+
+        probs_pacman = torch.softmax(probs_pacman)
+        probs_ghost = torch.softmax(probs_ghost)
+
+        # self.P = {a: p for a, p in zip(actions, probs)}
+
+        for action_pacman in actions_pacman:
+            for action_ghost in actions_ghost:
+                if (action_pacman, action_ghost) not in self.children:
+                    _, done, _  =  self.env.step(action_pacman, action_ghost)
+                    self.children[(action_pacman, action_ghost)] = MCTSNode(self.env, done, parent=self)
+
+        return value_pacman, value_ghost
+
+    def select(self, c_puct):
+        # score = Q(s,a) + c_puct * P(s,a) * sqrt(N(s)) / (1+N(s,a))
+        bese_score=-float('inf')
+        best_action=None
+        best_child=None
+
+        total_visits=self.N if self.N>0 else 1
+        for action, child in self.children.items():
+            score = child.Q + c_puct*self.P[action]*np.sqrt(total_visits)/(1+child.N)
+            if score>bese_score:
+                bese_score=score
+                best_action=action
+                best_child=child
+        
+        return best_action, best_child
+    
+    def update(self, value):
+        self.N += 1
+        self.W += value
+        self.Q = self.W / self.N
+
+class MCTS:
+    def __init__(self, env, state, pacman, ghost, c_puct, temperature=1, num_simulations=1600):
+        self.env=copy.deepcopy(env)
+        self.state=state
+
+        self.pacman=pacman
+        self.ghost=ghost
+        self.c_puct=c_puct
+        self.temp_inverse=1/temperature
+        self.num_simulations=num_simulations
+
+    def search(self, node):
+        if node.is_terminal:
+            return node.state_dict["score"]
+        
+        if not node.is_expanded:
+            value=node.expand(self.pacman, self.ghost)
+            node.update(value)
+            return value
+        
+        action, child=node.select(self.c_puct)
+
+        value=self.search(child)
+        node.update(value)
+        return value
+    
+    def run(self):
+        self.root = MCTSNode(self.env, self.state)
+        for _ in range(self.num_simulations):
+            self.search(self.root)
+
+        action_prob={}
+        sum_visits=0
+        for action, child in self.root.children:
+            action_prob[action]=child.N**self.temp_inverse
+            sum_visits+=child.N**self.temp_inverse
+        action_prob/=sum_visits
+
+        return max(action_prob) # 根据***抽取
