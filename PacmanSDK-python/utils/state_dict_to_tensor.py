@@ -50,3 +50,41 @@ def state_dict_to_tensor(state_dict):
     ).unsqueeze(
         0
     )
+
+def state2tensor(state):
+    state_dict=state.gamestate_to_statedict()
+    
+    board=np.array(state_dict["board"])
+    padding_num = 42 - state_dict["board_size"]
+    board = np.pad(board, pad_width=(padding_num//2, padding_num-padding_num//2), mode="constant", constant_values=0)
+
+    board_coin = board
+    board_coin[board_coin>=4]=0
+
+    board_special = board
+    board_special[board_special<=3]=0
+    board_special[board_special==9]=0
+
+    pacman_pos = np.zeros((42, 42))
+    pacman = state_dict["pacman_coord"]
+    pacman_pos[pacman[0] + padding_num//2][pacman[1] + padding_num//2] = 1
+
+    ghost_pos = np.zeros((42, 42))
+    for ghost in state_dict["ghosts_coord"]:
+        ghost_pos[ghost[0] + padding_num][ghost[1] + padding_num] = 1
+
+    portal_pos = np.zeros((42, 42))
+    portal = state_dict["portal_coord"]
+    if portal[0] != -1 and portal[1] != -1 and state_dict["portal_available"]:
+        portal_pos[portal[0] + padding_num][portal[1] + padding_num] = 1
+
+    extra=state_dict["pacman_skill_status"]
+    extra=np.insert(extra, 5, state_dict["round"])
+    extra=np.insert(extra, 6, state_dict["beannumber"])
+    extra_expanded=np.resize(extra, (42, 42))
+
+    state_arrays = [board, board_coin, board_special, pacman_pos, ghost_pos, portal_pos, extra_expanded]
+    state_stacked = np.stack(state_arrays, axis=-1)
+    state_tensor = torch.tensor(state_stacked)
+
+    return state_tensor

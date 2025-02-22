@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.autograd import Variable
+
 from core.gamedata import *
 from utils.state_dict_to_tensor import *
 from utils.valid_action import *
@@ -187,124 +188,223 @@ class MCTS:
             node.N += 1
             node.W += value
             node.Q = node.W / node.N
+
+class ResidualBlock(nn.Module):
+    def __init__(self, num_filters):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(num_filters, num_filters, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(num_filters)
+        self.conv2 = nn.Conv2d(num_filters, num_filters, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(num_filters)
+
+    def forward(self, x):
+        residual = x
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += residual
+        out = F.relu(out)
+        return out
+
+class ValueNet(nn.Module):
+    """
+      - Feature: Conv -> BN -> ReLU + ResidualBlock
+      - Policy Head: Conv(2 filters) -> BN -> ReLU -> Flatten -> FC -> (log)softmax
+      - Value Head: Conv(1 filter) -> BN -> ReLU -> Flatten -> FC -> ReLU -> FC -> Tanh
+    """
+    def __init__(
+        self,
+        in_channels=7,
+        board_size=42,
+        num_filters=256,
+        num_res_blocks=7,
+        policy_out_dim=5,
+        if_Pacman=True
+    ):
+        super(ValueNet, self).__init__()
+
+        if(if_Pacman):
+            policy_out_dim=5
+        else:
+            policy_out_dim=15
+
+        self.conv = nn.Conv2d(in_channels, num_filters, kernel_size=3, stride=1, padding=1)
+        self.bn = nn.BatchNorm2d(num_filters)
+
+        self.res_blocks = nn.ModuleList([ResidualBlock(num_filters) for _ in range(num_res_blocks)])
+
+        self.policy_conv = nn.Conv2d(num_filters, 2, kernel_size=1, stride=1)
+        self.policy_bn = nn.BatchNorm2d(2)
+        self.policy_fc = nn.Linear(2 * board_size * board_size, policy_out_dim)
+
+        self.value_conv = nn.Conv2d(num_filters, 1, kernel_size=1, stride=1)
+        self.value_bn = nn.BatchNorm2d(1)
+        self.value_fc1 = nn.Linear(board_size * board_size, 256)
+        self.value_fc2 = nn.Linear(256, 1)
+
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        x = F.relu(self.bn(self.conv(x)))
+        for block in self.res_blocks:
+            x = block(x)
+
+        # Policy Head
+        p = F.relu(self.policy_bn(self.policy_conv(x)))
+        p = p.view(p.size(0), -1)
+        p = self.policy_fc(p)
+        p = F.log_softmax(p, dim=1)
+
+        # Value Head
+        v = F.relu(self.value_bn(self.value_conv(x)))
+        v = v.view(v.size(0), -1)
+        v = F.relu(self.value_fc1(v))
+        v = torch.tanh(self.value_fc2(v))
+
+        return p, v
+
+class PacmanAgent:
+    def __init__(self):
+        self.ValueNet=ValueNet(if_Pacman=True)
+        self.optimizer=optim.Adam(self.ValueNet.parameters())
+        self.init_weight(self.ValueNet)
     
-class ValueNet:
-    def __init__(self, input_channel_num, extra_size, num_actions, ifGhost):
-        super().__init__()
-        self.channels = input_channel_num
-        self.embedding_dim = 32
-        self.shared_embedding = nn.Embedding(input_channel_num * 10, self.embedding_dim)
-
-        self.conv1 = nn.Conv2d(self.channels * self.embedding_dim, 128, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(128, 256, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(256, 512, kernel_size=3, stride=2)
-        self.conv4 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1)
-
-        self.bn1 = nn.BatchNorm2d(256)
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
-
-        self.attention = nn.Sequential(
-            nn.Conv2d(512, 512//8, 1),
-            nn.ReLU(),
-            nn.Conv2d(512//8, 512, 1),
-            nn.Sigmoid()
-        )
-
-        self.encoder= nn.Sequential(
-            nn.Linear(extra_size, 64),
-            nn.ReLU(),
-            nn.Linear(64, 256),
-            nn.ReLU(),
-            nn.Linear(256, 512)
-        )
-
-        self.act = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.ReLU,
-            nn.Linear(256, 128),
-            nn.ReLU,
-            nn.Linear(128, num_actions + 2 * num_actions * ifGhost)
-        )
-
-        self.val = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.ReLU,
-            nn.Linear(256, 128),
-            nn.ReLU,
-            nn.Linear(128, 1)
-        )
-
-    def forward(self, x, y):
-        B, C, H, W = x.shape
-        device = x.device
-        offsets = torch.arange(C, device=device).view(1, C, 1, 1) * 10
-        x_offset = x.long() + offsets
-        x_offset = x_offset.view(B, -1)
-        embedded = self.shared_embedding(x_offset)
-        embedded = embedded.view(B, C, H, W, self.embedding_dim)
-        x_embedded = embedded.permute(0, 4, 1, 2, 3).reshape(B, C * self.embedding_dim, H, W)
-
-        x_out = F.relu(self.conv1(x_embedded))
-        x_out = F.relu(self.conv2(x_out))
-        x_out = self.bn1(x_out)
-        x_out = F.relu(self.conv3(x_out))
-        x_out = self.conv4(x_out)
-        
-        att = self.attention(x_out)
-        x_out = x_out * att
-
-        x_out = self.adaptive_pool(x_out).view(B, -1)
-        x_out = F.normalize(self.fc(x_out), p=2, dim=1)
-
-        y_encoded = torch.sigmoid(self.encoder(y))
-
-        features = x_out + y_encoded
-        
-        act = self.act(features)
-        val = self.val(features)
-
-        return act, val
-
-class PolicyValueNet:
-    def __init__(self, input_channel_num, extra_size, num_actions):
-        self.policy_value_net_pacman = ValueNet(input_channel_num, extra_size, num_actions, False)
-        self.policy_value_net_ghost = ValueNet(input_channel_num, extra_size, num_actions, True)
-        self.optimizer_pacman = optim.Adam(self.policy_value_net_pacman.parameters())
-
-    def init_weights(self, m):
-        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
-            torch.nn.init.xavier_uniform_(m.weight)
-            if m.bias is not None:
-                torch.nn.init.zeros_(m.bias)
-        elif isinstance(m, nn.Embedding):
-            torch.nn.init.uniform_(m.weight, -0.05, 0.05)
-        elif isinstance(m, nn.BatchNorm2d):
-            torch.nn.init.ones_(m.weight)
-            torch.nn.init.zeros_(m.bias)
-        elif isinstance(m, nn.InstanceNorm2d):
-            torch.nn.init.ones_(m.weight)
-            torch.nn.init.zeros_(m.bias)
-
-    def init_network(self, network, name):
+    def init_weight(self, model, name="pacman_zero.pth"):
         if os.path.exists(name):
-            network.load_state_dict(torch.load(name, map_location=device, weights_only=True))
+            model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
         else:
             print("No checkpoint found. Training from scratch.")
-            network.apply(self.init_weights)
-        
-    def save_model(self, network, name):
-        torch.save(network.state_dict(), name)
+            model.init_weights()
 
-    def predict(self, env, state, extra):
-        pos = env.get_return_dict["pacman_coord"]
-        legal_positions = self.get_valid_moves(pos, state)
-        log_act_probs, value = self.policy_value_net_pacman(state, extra)
-        act_probs = np.exp(log_act_probs.data.numpy().flatten())
-        value = value.data.numpy()[0][0]
-        act_probs = zip(legal_positions, act_probs[legal_positions])
-        return act_probs, value
+    def save_model(self, model, name="pacman_zero.pth"):
+        torch.save(model.state_dict(), name)
     
-    def train_step(self, state_batch, mcts_probs, winner_batch, lr):
+    def predict(self, state):
+        pos = state.gamestate_to_statedict()["pacman_coord"]
+        legal_action = get_valid_moves_pacman(pos, state)
+
+        log_act_probs, value = self.ValueNet(state)
+        act_probs = np.exp(log_act_probs.data.numpy().flatten())
+        act_probs = zip(legal_action, act_probs[legal_action])
+
+        value_float = value.float()
+
+        # act_probs = [] (length = 5)
+        # zip ( * , * )
+
+        return act_probs, value_float
+
+    def train(self, traj):
+        # traj.append((state, prob_pacman, value_pacman, prob_ghost, value_ghost, reward_pacman, reward_ghost))
+        # loss = mse + cross_rntopy
+        for point in traj:
+            state, prob_pacman, value_pacman, _, _, _, _, _ = traj
+            prob_pacman_predict, value_pacman_predict = self.predict(state)
+            loss_value = nn.MSELoss(value_pacman, value_pacman_predict)
+            loss_prob = nn.CrossEntropyLoss(prob_pacman, prob_pacman_predict)
+            loss = loss_value + loss_prob
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+    
+class GhostAgent:
+    def __init__(self):
+        self.ValueNet=ValueNet(if_Pacman=True)
+        self.optimizer=optim.Adam(self.ValueNet.parameters())
+        self.init_weight(self.ValueNet)
+    
+    def init_weight(self, model, name="ghost_zero.pth"):
+        if os.path.exists(name):
+            model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
+        else:
+            print("No checkpoint found. Training from scratch.")
+            model.init_weights()
+
+    def save_model(self, model, name="ghost_zero.pth"):
+        torch.save(model.state_dict(), name)
+
+    def predict(self, state):
+        pos = state.gamestate_to_statedict()["ghosts_coord"]
+        legal_actions = get_valid_moves_pacman(pos, state)
+
+        log_act_probs, value = self.ValueNet(state)
+
+        act_probs = np.exp(log_act_probs.data.numpy().flatten())
+        act_probs_new = {}
+        for action, index in enum(legal_actions):
+            act_probs_new[action]=[]
+            act_probs_new[action].append(act_probs[index*3])
+            act_probs_new[action].append(act_probs[index*3+1])
+            act_probs_new[action].append(act_probs[index*3+2])
+        act_probs_new = zip(legal_actions, act_probs_new[legal_actions])
+
+        # act_probs_new = {action=[ , , ]: [ , , ]}
+        # zip ([ , , ], [ , , ])
+
+        value_float = value.float()
+
+        return act_probs_new, value_float
+
+    def train(self, traj):
+        for point in traj:
+            state, _, _, prob_ghost, value_ghost, _, _, _ = traj
+            prob_ghost_predict, value_ghost_predict = self.predict(state)
+            loss_value = nn.MSELoss(value_ghost, value_ghost_predict)
+            loss_prob = nn.CrossEntropyLoss(prob_ghost, prob_ghost_predict)
+            loss = loss_value + loss_prob
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+"""
+    def predict(self, state):
+        pos = state.gamestate_to_statedict()["pacman_coord"]
+        legal_action = get_valid_moves_pacman(pos, state)
+
+        log_act_probs, value = self.ValueNet(state)
+        act_probs = np.exp(log_act_probs.data.numpy().flatten())
+        act_probs = zip(legal_action, act_probs[legal_action])
+
+        value_float = value.float()
+
+        # act_probs = [] (length = 5)
+        # zip ( * , * )
+
+        return act_probs, value_float
+
+    def predict(self, state):
+        pos = state.gamestate_to_statedict()["ghosts_coord"]
+        legal_actions = get_valid_moves_pacman(pos, state)
+
+        log_act_probs, value = self.ValueNet(state)
+
+        act_probs = np.exp(log_act_probs.data.numpy().flatten())
+        act_probs_new = {}
+        for action, index in enum(legal_actions):
+            act_probs_new[action]=[]
+            act_probs_new[action].append(act_probs[index*3])
+            act_probs_new[action].append(act_probs[index*3+1])
+            act_probs_new[action].append(act_probs[index*3+2])
+        act_probs_new = zip(legal_actions, act_probs_new[legal_actions])
+
+        # act_probs_new = {action=[ , , ]: [ , , ]}
+        # zip ([ , , ], [ , , ])
+
+        value_float = value.float()
+
+        return act_probs_new, value_float
+
+    def _train_step(self, state_batch, mcts_probs, winner_batch, lr):
         state_batch = Variable(torch.FloatTensor(state_batch))
         mcts_probs = Variable(torch.FloatTensor(mcts_probs))
         winner_batch = Variable(torch.FloatTensor(winner_batch))
@@ -322,124 +422,121 @@ class PolicyValueNet:
         entropy = -torch.mean(torch.sum(torch.exp(log_act_probs) * log_act_probs, 1))
         
         return loss.item(), entropy.item()
-    
-class AlphaZeroTrainer: # Train Pipeline
-    def __init__(self, env, n_games, c_puct, pacman_policy, ghost_policy):
-        self.env = env
-        self.n_games = n_games
-        self.c_puct = c_puct
+"""
 
-        self.pacman_policy = pacman_policy
-        self.ghost_policy = ghost_policy
+# model: MCTS && AlphaZero
+# Class: MCTSNode, MCTS, ValueNet, Trainer(self_play)
 
-        self.buffer_size = 10000
-        self.data_selfplay = deque(maxlen=self.buffer_size)
+# 回合制MCTS, 搜索到回合结束, 开始倾向于广度搜索, 后面倾向于深度搜索
+# 通过深度残差网络给出q和pi
+# 探索次数说明有价值
 
-        self.play_batch_size = 1
-        self.epochs = 5  # num of train_steps for each update
-        self.kl_targ = 0.02
-        self.check_freq = 50
-        self.game_batch_num = 1500
-        self.best_win_ratio = 0.0
-        # num of simulations used for the pure mcts, which is used as
-        # the opponent to evaluate the trained policy
-        self.pure_mcts_playout_num = 1000
-        """
-        if init_True:
-            # start training from an initial policy-value net
-            self.policy_value_net = PolicyValueNet(self.board_width,
-                                                   self.board_height,
-                                                   model_file=init_model)
-        else:
-            # start training from a new policy-value net
-            self.policy_value_net = PolicyValueNet(self.board_width,
-                                                   self.board_height)
-        self.mcts_player = MCTS(self.policy_value_net.policy_value_fn,
-                                      c_puct=self.c_puct,
-                                      n_playout=self.n_playout,
-                                      is_selfplay=1)
-        """
+# 网络结构, 公共头, 策略头, 价值头
+# 网络就是参数 \theta
 
-    def self_play(self, n_games=1000):
-        for i in range(n_games):
-            gamestates, probs, rewards = self.game.start_self_play(self.mcts_player, temp=self.temp)
-            play_data = data_process(gamestates, probs, rewards)
-            self.data_buffer.extend(play_data)
-    
-    def self_play_step(self):
-        self.env.reset()
-        states, actions, probs, current_players = [], [], [], []
-        if_pacman = True
-        gamestate = self.env.game_state()
+# agent = Agent()
+# for iteration:
+#   trajs=[]
+#   for episode: 获取经验
+#       traj.append(play())
+#   learn() 更新参数theta
+#   play()
+#
+# def play:
+#   traj = []
+#   while True:
+#       action, prob_distri = agent.decide
+#       step(action)
+#       if done: break
+#       (p, state, bonus, who)
+#
+# def decide:
+#   agent.search() # 多次MCTS
+#   p = count[action]/sum(count[action])
+#   a = random_choice(p)
+#   return (a, p)
+#
+# def search:
+#   # 递归函数
+#   if done: return v
+#   if policy is empty:
+#       action_prob, value = net(state)
+#       self.policy = softmmax(action_prob.correct())
+#       return Vs
+#       # 此后策略不会变化，但是价值会更新
+#   else:
+#       # PUCT
+#       # find max(\lambda \pi + self.q) # 初始q置零
+#       v = search(max)
+#       self.count + 1
+#       self.q += (v-q)/n # 增量更新
+#       return v
+# def learn:
+#   for batches:
+#       net_fit(traj) # 训练theta
+#   reset() # 只保留theta
+
+class AlphaZeroTrainer:
+    def __init__(self, env, pacman, ghost, MCTS, iterations=100, episodes=100, check_time=100, search_time=100):
+        self.env=env
+
+        self.pacman=pacman
+        self.ghost=ghost
+        self.MCTS=MCTS
+
+        self.iterations=iterations
+        self.episodes=episodes
+        self.check_time=check_time
+        self.search_time=search_time
+
+        self.best_score=0.0
+
+    def pacman_decide(self):
+        state = self.env.game_state()
+        count = self.MCTS.search()
+        action = get_valid_moves_pacman(state.gamestate_to_statedict()["pacman_coord"])
+        p = count[action]/sum(count[action])
+        a = np.multiply(p)
+        return (a, p)
+
+    def ghost_decide(self):
+        state = self.env.game_state()
+        count = self.MCTS.search()
+        action = get_valid_moves_pacman(state.gamestate_to_statedict()["pacman_coord"])
+        p = count[action]/sum(count[action])
+        a = np.multiply(p)
+        return (a, p)
+
+    def play(self):
+        traj=[]
         while True:
-            player = MCTS(self.pacman_policy, self.ghost_policy, self.env, gamestate, if_pacman)
-            action, action_prob = player.search()
-            states.append(gamestate)
-            actions.append(action)
-            probs.append(action_prob)
-            current_players.append("pacman" if if_pacman else "ghost")
-            if not if_pacman:
-                self.env.step(actions[-1], action)
-            if_pacman = False if if_pacman else True
-            gamestate = self.env.game_state()
-            done, reward_pacman, reward_ghost = gamestate
+            action_pacman, prob_pacman, value_pacman = self.pacman_decide()
+            action_ghost, prob_ghost, value_ghost = self.ghost_decide()
+            _, reward_pacman, reward_ghost, done, eatenALl = self.env.step(action_pacman, action_ghost)
+            state=self.env.game_state()
+            traj.append((state, prob_pacman, value_pacman, prob_ghost, value_ghost, reward_pacman, reward_ghost))
             if done:
-                reward = np.zeros(len(current_players))
-                reward[np.array(current_players) == "pacman"] = reward_pacman
-                reward[np.array(current_players) == "ghpst"] = reward_ghost
-                return zip(states, probs, reward)
-
-    def evaluate(self):
-        # def __init__(self, pacman_net, ghost_net, env, root_state, root_extra, c_puct=1.0, num_simulations=10000):
-        current_mcts_player = MCTS(self.policy_value_net.policy_value_fn, c_puct=self.c_puct, n_playout=self.n_playout)
-        pure_mcts_player = MCTS(c_puct=5, n_playout=self.pure_mcts_playout_num)
-        win_cnt = {}
-        for i in range(self.n_games):
-            winner = self.game.start_play(current_mcts_player, pure_mcts_player, start_player=i % 2, is_shown=0)
-            win_cnt[winner] += 1
-        win_ratio = 1.0*(win_cnt[1] + 0.5*win_cnt[-1]) / self.n_games
-        return win_ratio
-
-    def update(self):
-        mini_batch = random.sample(self.data_buffer, self.batch_size)
-        state_batch = [data[0] for data in mini_batch]
-        mcts_probs_batch = [data[1] for data in mini_batch]
-        winner_batch = [data[2] for data in mini_batch]
-        old_probs, old_v = self.policy_value_net.policy_value(state_batch)
-        for i in range(self.epochs):
-            loss, entropy = self.policy_value_net.train_step(
-                    state_batch,
-                    mcts_probs_batch,
-                    winner_batch,
-                    self.learn_rate*self.lr_multiplier)
-            new_probs, new_v = self.policy_value_net.policy_value(state_batch)
-            kl = np.mean(np.sum(old_probs * (
-                    np.log(old_probs + 1e-10) - np.log(new_probs + 1e-10)),
-                    axis=1)
-            )
-            if kl > self.kl_targ * 4:  # early stopping if D_KL diverges badly
                 break
-        # adaptively adjust the learning rate
-        if kl > self.kl_targ * 2 and self.lr_multiplier > 0.1:
-            self.lr_multiplier /= 1.5
-        elif kl < self.kl_targ / 2 and self.lr_multiplier < 10:
-            self.lr_multiplier *= 1.5
-        
-        return loss, entropy
+        return traj
+
+    def learn(self, trajs):
+        for traj in trajs:
+            self.pacman.train(traj)
+            self.ghost.train(traj) # 可以向量化，批量训练
+        self.env.reset()
 
     def train(self):
-        best_win_ratio = 0.0
-        for i in range(self.n_games):
-            self.self_play(self.n_games)
-            if (i+1) % self.check_freq == 0:
-                win_ratio = self.policy_evaluate()
-                self.pacman_policy.save_model('pacman_zero.pth')
-                self.ghost_policy.save_model('ghost_zero.pth')
-                print("Batch: %d / %d, acc: %f", i, self.n_games, win_ratio)
-                if win_ratio > best_win_ratio:
-                    print("NEW BEST")
-                    self.pacman_policy.save_model('pacman_zero_best.pth')
-                    self.ghost_policy.save_model('ghost_zero_best.pth')
-                    if (self.best_win_ratio == 1.0 and self.pure_mcts_playout_num < 5000):
-                        self.pure_mcts_playout_num += 1000
-                        self.best_win_ratio = 0.0
+        for _ in range(self.iterations):
+            trajs=[]
+            for __ in range(self.episodes):
+                trajs.append(self.play)
+            self.learn(trajs)
+
+            score=0.0
+            for __ in range(self.check_time):
+                score+=self.play()
+            score/=self.check_time
+            if(score>self.best_score):
+                print(f"NEW  BEST with acc {score}")
+                self.pacman.save_model()
+                self.ghost.save_model()
