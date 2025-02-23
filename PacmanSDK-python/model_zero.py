@@ -12,11 +12,12 @@ from core.gamedata import *
 from utils.state_dict_to_tensor import *
 from utils.valid_action import *
 from utils.data_process import *
+from utils.ghostact_int2list import *
 
-device = torch.device("cuda" if torch.cuda() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class MCTSNode:
-    def __init__(self, env, done=True, parent=None):
+    def __init__(self, env, done=False, parent=None):
         self.env=copy.deepcopy(env)
         self.state=env.game_state()
         self.state_dict=self.state.gamestate_to_statedict()
@@ -37,25 +38,28 @@ class MCTSNode:
         return self.done
 
     def is_expanded(self):
-        return len(self.P)>0
+        return len(self.P_pacman)>0 or len(self.P_ghost)>0
     
     def expand(self, pacman, ghost):
         action_probs_pacman, value_pacman = pacman.predict(self.state)
         action_probs_ghost, value_ghost = ghost.predict(self.state)
 
+        action_probs_pacman=dict(action_probs_pacman)
+        action_probs_ghost=dict(action_probs_ghost)
+
         actions_pacman=list(action_probs_pacman.keys())
         actions_ghost=list(action_probs_ghost.keys())
 
-        probs_pacman = np.array([action_probs_pacman[a] for a in actions_pacman])
-        probs_ghost = np.array([action_probs_ghost[a] for a in actions_ghost])
+        probs_pacman = [action_probs_pacman[a] for a in actions_pacman]
+        probs_ghost = [action_probs_ghost[a] for a in actions_ghost]
 
         self.P_pacman = {a: p for a, p in zip(actions_pacman, probs_pacman)}
-        self.P_ghost = {a: p for a, p in zip(action_ghost, probs_ghost)}
+        self.P_ghost = {a: p for a, p in zip(actions_ghost, probs_ghost)}
 
         for action_pacman in actions_pacman:
             for action_ghost in actions_ghost:
                 if (action_pacman, action_ghost) not in self.children:
-                    _, _, _, done, _  =  self.env.step(action_pacman, action_ghost)
+                    _, _, _, done, _  =  self.env.step(action_pacman, ghostact_int2list(action_ghost))
                     self.children[(action_pacman, action_ghost)] = MCTSNode(self.env, done, parent=self)
 
         return value_pacman, value_ghost
@@ -68,8 +72,8 @@ class MCTSNode:
 
         total_visits=self.N if self.N>0 else 1
         for (action_pacman, action_ghost), child in self.children.items():
-            score = (child.Q + c_puct*(self.P_pacman[action_pacman])*np.sqrt(total_visits)/(1+child.N)
-                            + c_puct*(self.P_ghost[action_ghost])*np.sqrt(total_visits)/(1+child.N))
+            score = (child.Q_pacman + c_puct*(self.P_pacman[action_pacman])*np.sqrt(total_visits)/(1+child.N)
+                        + child.Q_ghost + c_puct*(self.P_ghost[action_ghost])*np.sqrt(total_visits)/(1+child.N))
             if score>bese_score:
                 bese_score=score
                 best_action_pacman=action_pacman
@@ -115,27 +119,51 @@ class MCTS:
         return value
     
     def run(self):
-        self.root = MCTSNode(self.env, self.state)
+        self.root = MCTSNode(self.env)
         for _ in range(self.num_simulations):
+            if (_+1)%40 == 0:
+                print(f"search {_} times")
             self.search(self.root)
 
-        action_prob = {}
+        action_prob_pacman = {}
+        action_prob_ghost = {}
         sum_visits = 0
 
         for action, child in self.root.children.items():
-            visit = child.N ** self.temp_inverse
-            action_prob[action] = visit
-            sum_visits += visit
+            action_pacman, action_ghost = action
+            if not action_pacman in action_prob_pacman:
+                action_prob_pacman[action_pacman]=child.N
+            else:
+                action_prob_pacman[action_pacman]+=child.N
+            if not action_ghost in action_prob_ghost:
+                action_prob_ghost[action_ghost]=child.N
+            else:
+                action_prob_ghost[action_ghost]+=child.N
+            sum_visits+=child.N
 
         sum_visits = sum_visits or 1e-8
-        for action in action_prob:
-            action_prob[action] /= sum_visits
+        sum_visits = sum_visits ** self.temp_inverse
 
-        actions = list(action_prob.keys())
-        probabilities = [action_prob[action] for action in actions]
-        selected_action = np.random.choice(actions, p=probabilities)
+        for action_pacman in action_prob_pacman:
+            action_prob_pacman[action_pacman] = action_prob_pacman[action_pacman]**self.temp_inverse
+            action_prob_pacman[action_pacman] /= sum_visits
 
-        return selected_action, action_prob, self.root.Q_pacman, self.root.Q_ghost
+        for action_ghost in action_prob_ghost:
+            action_prob_ghost[action_ghost] = action_prob_ghost[action_ghost]**self.temp_inverse
+            action_prob_ghost[action_ghost] /= sum_visits
+
+        actions_pacman = list(action_prob_pacman.keys())
+        probabilities_pacman = [action_prob_pacman[action] for action in actions_pacman]
+        selected_action_pacman = np.random.choice(actions_pacman, p=probabilities_pacman)
+
+        actions_ghost = list(action_prob_ghost.keys())
+        probabilities_ghost = [action_prob_ghost[action] for action in actions_ghost]
+        selected_action_ghost = np.random.choice(actions_ghost, p=probabilities_ghost)
+
+        decision_pacman = (selected_action_pacman, action_prob_pacman, self.root.Q_pacman)
+        decision_ghost = (selected_action_ghost, action_prob_ghost, self.root.Q_ghost)
+
+        return (decision_pacman, decision_ghost)
 
 class ResidualBlock(nn.Module):
     def __init__(self, num_filters):
@@ -211,7 +239,7 @@ class ValueNet(nn.Module):
         p = F.relu(self.policy_bn(self.policy_conv(x)))
         p = p.view(p.size(0), -1)
         p = self.policy_fc(p)
-        p = F.log_softmax(p, dim=1)
+        p = F.softmax(p, dim=1)
 
         # Value Head
         v = F.relu(self.value_bn(self.value_conv(x)))
@@ -226,6 +254,7 @@ class PacmanAgent:
         self.ValueNet=ValueNet(if_Pacman=True)
         self.optimizer=optim.Adam(self.ValueNet.parameters())
         self.init_weight(self.ValueNet)
+        self.ValueNet.to(device)
     
     def init_weight(self, model, name="pacman_zero.pth"):
         if os.path.exists(name):
@@ -241,17 +270,18 @@ class PacmanAgent:
         pos = state.gamestate_to_statedict()["pacman_coord"]
         legal_action = get_valid_moves_pacman(pos, state)
 
-        act_probs, value = self.ValueNet(state)
+        act_probs, value = self.ValueNet(state2tensor(state))
+        act_probs = act_probs.squeeze()
+        value = value.squeeze()
         act_probs = zip(legal_action, act_probs[legal_action])
 
-        value_float = value.float()
-
-        return act_probs, value_float
+        return act_probs, value
 
     def train(self, traj):
         # traj.append((state, prob_pacman, value_pacman, prob_ghost, value_ghost, reward_pacman, reward_ghost))
         # loss = mse + cross_rntopy
-        for point in traj:
+        for (point, num) in enum(traj):
+            print(f"train {num+1} times")
             state, prob_pacman, value_pacman, _, _, _, _, _ = point
             prob_pacman_predict, value_pacman_predict = self.predict(state)
             loss_value = (value_pacman, value_pacman_predict)**2
@@ -260,12 +290,14 @@ class PacmanAgent:
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
+            self.optimizer.zero_grad()
     
 class GhostAgent:
     def __init__(self):
-        self.ValueNet=ValueNet(if_Pacman=True)
+        self.ValueNet=ValueNet(if_Pacman=False)
         self.optimizer=optim.Adam(self.ValueNet.parameters())
         self.init_weight(self.ValueNet)
+        self.ValueNet.to(device)
     
     def init_weight(self, model, name="ghost_zero.pth"):
         if os.path.exists(name):
@@ -281,16 +313,16 @@ class GhostAgent:
         pos = state.gamestate_to_statedict()["ghosts_coord"]
         legal_actions = get_valid_moves_ghost(pos, state)
 
-        act_probs, value = self.ValueNet(state)
+        act_probs, value = self.ValueNet(state2tensor(state))
 
-        act_probs_new = {}
-        for action in enum(legal_actions):
-            index = action[0] + action[1]*5 + action[2]*25
-            act_probs_new[action] = act_probs[index]
+        act_probs = act_probs.squeeze()
+        value = value.squeeze()
+
+        act_probs = zip(legal_actions, act_probs[legal_actions])
 
         value_float = value.float()
 
-        return act_probs_new, value_float
+        return act_probs, value_float
 
     def train(self, traj):
         for point in traj:
@@ -304,13 +336,13 @@ class GhostAgent:
             self.optimizer.step()
 
 class AlphaZeroTrainer:
-    def __init__(self, env, pacman, ghost, c_puct, iterations=100, episodes=100, check_time=10, search_time=100):
+    def __init__(self, env, pacman, ghost, c_puct, iterations=100, episodes=10, check_time=10, search_time=1600):
         self.env=env
 
         self.pacman=pacman
         self.ghost=ghost
         self.c_puct=c_puct
-        self.MCTS=MCTS(self.env, self.pacman, self.ghost, self.c_puct)
+        self.MCTS=MCTS(self.env, self.pacman, self.ghost, self.c_puct, num_simulations=search_time)
 
         self.iterations=iterations
         self.episodes=episodes
@@ -320,10 +352,7 @@ class AlphaZeroTrainer:
         self.best_score=0.0
 
     def decide(self):
-        (action_prob_pacman, action_prob_ghost, value_pacman, value_ghost) = self.MCTS.run()
-        decision_pacman = (action_prob_pacman, value_pacman)
-        decision_ghost = (action_prob_ghost, value_ghost)
-        return (decision_pacman, decision_ghost)
+        return self.MCTS.run()
 
     def play(self):
         traj=[]
@@ -333,7 +362,7 @@ class AlphaZeroTrainer:
             decision_pacman, decision_ghost = self.decide()
             selected_action_pacman, action_prob_pacman, value_pacman = decision_pacman
             selected_action_ghost, action_prob_ghost, value_ghost = decision_ghost
-            _, reward_pacman, reward_ghost, done, eatAll = self.env.step(selected_action_pacman, selected_action_ghost)
+            _, reward_pacman, reward_ghost, done, eatAll = self.env.step(selected_action_pacman, ghostact_int2list(selected_action_ghost))
             state=self.env.game_state()
             traj.append((state, action_prob_pacman, value_pacman, action_prob_ghost, value_ghost, reward_pacman, reward_ghost))
             if done:
@@ -364,10 +393,26 @@ class AlphaZeroTrainer:
             score_pacman/=self.check_time
             score_ghost/=self.check_time
             
-            print(f"Iteration: {ite}/{self.iterations}, loss_pacman = {loss_pacman}, loss_ghost = {loss_ghost}, 
-                  score_pacman = {score_pacman}, score_ghost = {score_ghost}")
+            print(f"Iteration: {ite}/{self.iterations}, loss_pacman = {loss_pacman}, loss_ghost = {loss_ghost}, score_pacman = {score_pacman}, score_ghost = {score_ghost}")
 
             if(score_pacman+score_ghost>self.best_score):
                 print(f"NEW  BEST with score {score_pacman+score_ghost}")
                 self.pacman.save_model()
                 self.ghost.save_model()
+
+if __name__ == "__main__":
+    from core.GymEnvironment import *
+    env=PacmanEnv()
+    env.reset()
+
+    pacman = PacmanAgent()
+    ghost = GhostAgent()
+
+    action1, value1 = pacman.predict(env.game_state())
+    action2, value2 = ghost.predict(env.game_state())
+
+    print(action1, value1, action2, value2)
+
+    env.reset()
+    mcts = MCTS(env=env, pacman=pacman, ghost=ghost, c_puct=1.25)
+    print(mcts.run())

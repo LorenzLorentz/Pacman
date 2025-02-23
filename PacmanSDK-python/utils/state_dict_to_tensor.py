@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 def state_dict_to_tensor(state_dict):
     board = state_dict["board"]
     if isinstance(board, list):
@@ -84,7 +86,7 @@ def state2tensor(state):
     extra_expanded=np.resize(extra, (42, 42))
 
     state_arrays = [board, board_coin, board_special, pacman_pos, ghost_pos, portal_pos, extra_expanded]
-    state_stacked = np.stack(state_arrays, axis=-1)
-    state_tensor = torch.tensor(state_stacked)
+    state_stacked = np.stack(state_arrays, axis=0)
+    state_tensor = torch.tensor(state_stacked, dtype=torch.float32, device=device).unsqueeze(0)
 
     return state_tensor
