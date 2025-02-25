@@ -41,7 +41,7 @@ class PacmanEnvDecorator:
 
 class MCTSNode:
     def __init__(self, env, done=False, parent=None):
-        self.env=env
+        self.env=copy.deepcopy(env)
         self.state=env.game_state()
         self.state_dict=self.state.gamestate_to_statedict()
         self.done=done
@@ -115,7 +115,7 @@ class MCTSNode:
         self.Q_ghost = self.W_ghost / self.N
 
 class MCTS:
-    def __init__(self, env, pacman, ghost, c_puct, temperature=1, num_simulations=1600):
+    def __init__(self, env, pacman, ghost, c_puct, temperature=1, num_simulations=120):
         self.env=env
 
         self.pacman=pacman
@@ -143,8 +143,8 @@ class MCTS:
     def run(self):
         self.root = MCTSNode(self.env)
         for _ in range(self.num_simulations):
-            if (_+1)%40 == 0:
-                print(f"search {_+1} times")
+            # if (_+1)%40 == 0:
+            #     print(f"search {_+1} times")
             self.search(self.root)
 
         visits_pacman = np.zeros(5, dtype=np.float32)
@@ -380,9 +380,9 @@ class GhostAgent:
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
-    def train_batch(self, traj):
-        for i in range(0, len(traj), self.batch_size):
-            batch = traj[i:i + self.batch_size]
+    def train_batch(self, traj, batch_size=32):
+        for i in range(0, len(traj), batch_size):
+            batch = traj[i:i + batch_size]
             states = []
             probs_ghost = []
             values_ghost = []
@@ -410,35 +410,38 @@ class GhostAgent:
             self.scaler.update()
 
 class AlphaZeroTrainer:
-    def __init__(self, env, pacman, ghost, c_puct, iterations=100, episodes=10, check_time=10, search_time=1600):
+    def __init__(self, env, pacman, ghost, c_puct, iterations=100, episodes=1, check_time=1, search_time=120):
         self.env=env
 
         self.pacman=pacman
         self.ghost=ghost
         self.c_puct=c_puct
-        self.MCTS=MCTS(self.env, self.pacman, self.ghost, self.c_puct, num_simulations=search_time)
+        # self.MCTS=MCTS(self.env, self.pacman, self.ghost, self.c_puct, num_simulations=search_time)
 
         self.iterations=iterations
         self.episodes=episodes
         self.check_time=check_time
-        # self.search_time=search_time
+        self.search_time=search_time
 
         self.best_score=0.0
 
     def decide(self):
-        return self.MCTS.run()
+        mcts=MCTS(self.env, self.pacman, self.ghost, self.c_puct, num_simulations=self.search_time)
+        return mcts.run()
 
     def play(self):
         traj=[]
         reward_pacman=0.0
         reward_ghost=0.0
+        step=0
         while True:
             decision_pacman, decision_ghost = self.decide()
             selected_action_pacman, action_prob_pacman, value_pacman = decision_pacman
             selected_action_ghost, action_prob_ghost, value_ghost = decision_ghost
-            _, reward_pacman, reward_ghost, done, eatAll = self.env.step(selected_action_pacman, ghostact_int2list(selected_action_ghost))
+            dict, reward_pacman, reward_ghost, done, eatAll = self.env.step(selected_action_pacman, ghostact_int2list(selected_action_ghost))
             state=self.env.game_state()
             traj.append((state, action_prob_pacman, value_pacman, action_prob_ghost, value_ghost, reward_pacman, reward_ghost))
+            step+=1
             if done:
                 print("game end")
                 break
@@ -446,8 +449,8 @@ class AlphaZeroTrainer:
 
     def learn(self, trajs):
         for traj in trajs:
-            loss_pacman=self.pacman.train(traj)
-            loss_ghost=self.ghost.train(traj)
+            loss_pacman=self.pacman.train_batch(traj)
+            loss_ghost=self.ghost.train_batch(traj)
         self.env.reset()
         return (loss_pacman, loss_ghost)
 
@@ -476,6 +479,7 @@ class AlphaZeroTrainer:
                 self.ghost.save_model()
 
 if __name__ == "__main__":
+    import time
     from core.GymEnvironment import *
     env=PacmanEnvDecorator()
     env.reset()
@@ -483,11 +487,24 @@ if __name__ == "__main__":
     pacman = PacmanAgent()
     ghost = GhostAgent()
 
+    t=time.time()
     action1, value1 = pacman.predict(env.game_state())
     action2, value2 = ghost.predict(env.game_state())
-
-    print(action1, value1, action2, value2)
+    t=time.time()-t
+    print(f"time:{t}")
 
     env.reset()
-    mcts = MCTS(env=env, pacman=pacman, ghost=ghost, c_puct=1.25)
-    print(mcts.run())
+
+    t=time.time()
+    mcts = MCTS(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, num_simulations=15)
+    mcts.run()
+    t=time.time()-t
+    print(f"time:{t}")
+
+    SEARCH_TIME=15
+    env.reset()
+    t=time.time()
+    trainer = AlphaZeroTrainer(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, search_time=SEARCH_TIME)
+    trainer.play()
+    t=time.time()-t
+    print(f"time:{t}")

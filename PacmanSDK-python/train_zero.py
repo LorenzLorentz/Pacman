@@ -6,7 +6,7 @@ env.reset()
 pacman=PacmanAgent()
 ghost=GhostAgent()
 
-SEARCH_TIME=40
+SEARCH_TIME=120
 trainer = AlphaZeroTrainer(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, search_time=SEARCH_TIME)
 
 trainer.train()
