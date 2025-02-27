@@ -1,12 +1,16 @@
 import os
+import sys
+import time
+import datetime
 import copy
 import math
+import multiprocessing as mp
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.autograd import Variable
 from torch.amp import autocast, GradScaler
 
 from core.gamedata import *
@@ -17,6 +21,9 @@ from utils.data_process import *
 from utils.ghostact_int2list import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+time_short = datetime.datetime.now().strftime('%H%M')
+time_long = datetime.datetime.now().strftime('%m%d%H%M')
+sys.stdout = open(f'output_{time_short}.log', 'w')
 
 class PacmanEnvDecorator:
     def __init__(self, env=None):
@@ -86,16 +93,16 @@ class MCTSNode:
                 _, _, _, done, _ = self.env.step(action_pacman, ghostact_int2list(action_ghost), self.state)
                 self.children_matrix[action_pacman][action_ghost] = MCTSNode(self.env, done, parent=self)
 
-        return value_pacman, value_ghost
+        return value_pacman.item(), value_ghost.item()
 
     def select(self, c_puct):
-        bese_score=-float('inf')
-        best_action_pacman=None
-        best_action_ghost=None
-        best_child=None
+        indices=[]
+        q_pacman_list=[]
+        q_ghost_list=[]
+        n_list=[]
+        p_pacman_list=[]
+        p_ghost_list=[]
 
-        total_visits=self.N if self.N>0 else 1
-        
         pos_pacman = self.state.gamestate_to_statedict()["pacman_coord"]
         legal_action_pacman = get_valid_moves_pacman(pos_pacman, self.state)
         pos_ghost = self.state.gamestate_to_statedict()["ghosts_coord"]
@@ -104,16 +111,29 @@ class MCTSNode:
         for action_pacman in legal_action_pacman:
             for action_ghost in legal_action_ghost:
                 child = self.children_matrix[action_pacman][action_ghost]
-                if child is None:
-                    continue
-                score = (child.Q_pacman + c_puct*(self.P_pacman[action_pacman])*np.sqrt(total_visits)/(1+child.N)
-                        + child.Q_ghost + c_puct*(self.P_ghost[action_ghost])*np.sqrt(total_visits)/(1+child.N))
-                if score>bese_score:
-                    bese_score=score
-                    best_action_pacman=action_pacman
-                    best_action_ghost=action_ghost
-                    best_child=child
+                if child is not None:
+                    indices.append((action_pacman, action_ghost))
+                    q_pacman_list.append(child.Q_pacman)
+                    q_ghost_list.append(child.Q_ghost)
+                    n_list.append(child.N)
+                    p_pacman_list.append(self.P_pacman[action_pacman])
+                    p_ghost_list.append(self.P_ghost[action_ghost])
+
+        indices = np.array(indices)
+        q_pacman_arr = np.array(q_pacman_list)
+        q_ghost_arr = np.array(q_ghost_list)
+        n_arr = np.array(n_list)
+        p_pacman_arr = np.array(p_pacman_list)
+        p_ghost_arr = np.array(p_ghost_list)
+
+        total_visits = self.N if self.N > 0 else 1
+        bonus = c_puct * np.sqrt(total_visits) / (1 + n_arr)
+        scores = q_pacman_arr + bonus * p_pacman_arr + q_ghost_arr + bonus * p_ghost_arr
         
+        best_idx = np.argmax(scores)
+        best_action_pacman, best_action_ghost = indices[best_idx]
+        best_child = self.children_matrix[best_action_pacman][best_action_ghost]
+
         return best_action_pacman, best_action_ghost, best_child
     
     def update(self, value):
@@ -151,17 +171,67 @@ class MCTS:
 
         value=self.search(child)
         node.update(value)
+
         return value
     
+    def run_batch(self, batch_size=8):
+        self.root = MCTSNode(self.env)
+        for _ in range(self.num_simulations // batch_size):
+            leaf_nodes = []
+            paths = []
+            
+            for _ in range(batch_size):
+                node = self.root
+                path = []
+                while not node.is_terminal() and node.is_expanded():
+                    action_pacman, action_ghost, child = node.select(self.c_puct)
+                    path.append((node, action_pacman, action_ghost))
+                    node = child
+                leaf_nodes.append(node)
+                paths.append(path)
+            
+            states = [node.state for node in leaf_nodes]
+            state_tensors = [state2tensor(state) for state in states]
+            state_batch = torch.cat(state_tensors)
+            
+            with torch.no_grad():
+                action_probs_pacman, values_pacman = self.pacman.ValueNet(state_batch)
+                action_probs_ghost, values_ghost = self.ghost.ValueNet(state_batch)
+            
+            for i, node in enumerate(leaf_nodes):
+                if node.is_terminal():
+                    value = node.state_dict["score"]
+                else:
+                    self.P_pacman = action_probs_pacman[i].cpu().numpy()
+                    self.P_ghost = action_probs_ghost[i].cpu().numpy()
+                    value =  (values_pacman[i].item(), values_ghost[i].item())
+
+                    pos_pacman = node.state.gamestate_to_statedict()["pacman_coord"]
+                    legal_action_pacman = get_valid_moves_pacman(pos_pacman, node.state)
+                    pos_ghost = node.state.gamestate_to_statedict()["ghosts_coord"]
+                    legal_action_ghost = get_valid_moves_ghost(pos_ghost, node.state)
+
+                    for action_pacman in legal_action_pacman:
+                        for action_ghost in legal_action_ghost:
+                            node.env.restore(self.state)
+                            _, _, _, done, _ = node.env.step(action_pacman, ghostact_int2list(action_ghost), node.state)
+                            node.children_matrix[action_pacman][action_ghost] = MCTSNode(node.env, done, parent=self)
+                
+                for parent_node, _, _ in paths[i][::-1]:
+                    parent_node.update(value)
+                if not node.is_terminal():
+                    node.update(value)
+        return self.decide()
+
     def run(self):
         self.root = MCTSNode(self.env)
         for _ in range(self.num_simulations):
-            # if (_+1)%40 == 0:
-            #     print(f"search {_+1} times")
             self.search(self.root)
+        return self.decide()
 
-        visits_pacman = np.zeros(5, dtype=np.float32)
-        visits_ghost = np.zeros(125, dtype=np.float32)
+    def decide(self):
+        visits_pacman = torch.zeros(5, dtype=torch.float32, device=device)
+        visits_ghost = torch.zeros(125, dtype=torch.float32, device=device)
         sum_visits = 0.0
         
         pos_pacman = self.state.gamestate_to_statedict()["pacman_coord"]
@@ -177,19 +247,19 @@ class MCTS:
                     visits_ghost[action_ghost] += node.N
                     sum_visits += node.N ** self.temp_inverse
 
-        sum_visits = sum_visits if sum_visits != 0 else 1e-8
+        sum_visits = sum_visits if sum_visits != 0.0 else 1e-8
 
         prob_pacman = (visits_pacman ** self.temp_inverse) / sum_visits
         prob_ghost = (visits_ghost ** self.temp_inverse) / sum_visits
 
-        selected_action_pacman = np.random.choice(np.arange(5), p=prob_pacman)
-        selected_action_ghost = np.random.choice(np.arange(125), p=prob_ghost)
+        selected_action_pacman = torch.multinomial(prob_pacman, 1) #torch.random.choice(torch.arange(5), p=prob_pacman)
+        selected_action_ghost = torch.multinomial(prob_ghost, 1) # torch.random.choice(torch.arange(125), p=prob_ghost)
 
         selected_action_pacman = 0 if self.root.P_pacman[selected_action_pacman] != 0 else 0
         selected_action_ghost = 0 if self.root.P_ghost[selected_action_ghost] != 0 else 0
 
-        decision_pacman = (selected_action_pacman, prob_pacman, self.root.Q_pacman)
-        decision_ghost = (selected_action_ghost, prob_ghost, self.root.Q_ghost)
+        decision_pacman = (selected_action_pacman, prob_pacman, torch.tensor(self.root.Q_pacman, dtype=torch.float32, device=device))
+        decision_ghost = (selected_action_ghost, prob_ghost, torch.tensor(self.root.Q_ghost, dtype=torch.float32, device=device))
 
         return decision_pacman, decision_ghost
 
@@ -220,7 +290,7 @@ class ValueNet(nn.Module):
         in_channels=7,
         board_size=42,
         num_filters=128,
-        num_res_blocks=6,
+        num_res_blocks=14,
         policy_out_dim=5,
         if_Pacman=True
     ):
@@ -278,7 +348,8 @@ class ValueNet(nn.Module):
         return p, v
 
 class PacmanAgent:
-    def __init__(self, batch_size=32):
+    def __init__(self, batch_size=32, series=None):
+        self.series=series
         self.ValueNet=ValueNet(if_Pacman=True)
         self.optimizer=optim.Adam(self.ValueNet.parameters())
         self.scaler = GradScaler('cuda')
@@ -286,15 +357,17 @@ class PacmanAgent:
         self.ValueNet.to(device)
         self.batch_size=batch_size
     
-    def init_weight(self, model, name="pacman_zero.pth"):
-        if os.path.exists(name):
-            model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
+    def init_weight(self, model):
+        if(self.series):
+            name = f"model/pacman_zero_{self.series}.pth"
+            if os.path.exists(name):
+                model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
         else:
             print("No checkpoint found. Training from scratch.")
             model.init_weights()
 
-    def save_model(self, model, name="pacman_zero.pth"):
-        torch.save(model.state_dict(), name)
+    def save_model(self, name=f"model/pacman_zero_{time_long}.pth"):
+        torch.save(self.ValueNet.state_dict(), name)
     
     def predict(self, state):
         pos = state.gamestate_to_statedict()["pacman_coord"]
@@ -326,6 +399,8 @@ class PacmanAgent:
             self.scaler.update()
 
     def train_batch(self, traj):
+        loss_return = []
+
         for i in range(0, len(traj), self.batch_size):
             batch = traj[i:i + self.batch_size]
             states = []
@@ -355,9 +430,14 @@ class PacmanAgent:
             self.scaler.scale(loss).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
+
+            loss_return.append(loss)
+        
+        return loss_return[-1]
     
 class GhostAgent:
-    def __init__(self, batch_size=32):
+    def __init__(self, batch_size=32, series=None):
+        self.series=series
         self.ValueNet=ValueNet(if_Pacman=False)
         self.optimizer=optim.Adam(self.ValueNet.parameters())
         self.scaler = GradScaler('cuda')
@@ -365,15 +445,17 @@ class GhostAgent:
         self.ValueNet.to(device)
         self.batch_size=batch_size
     
-    def init_weight(self, model, name="ghost_zero.pth"):
-        if os.path.exists(name):
-            model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
+    def init_weight(self, model):
+        if self.series:
+            name = f"model/pacman_zero_{self.series}.pth"
+            if os.path.exists(name):
+                model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
         else:
             print("No checkpoint found. Training from scratch.")
             model.init_weights()
 
-    def save_model(self, model, name="ghost_zero.pth"):
-        torch.save(model.state_dict(), name)
+    def save_model(self, name=f"model/ghost_zero_{time_long}.pth"):
+        torch.save(self.ValueNet.state_dict(), name)
 
     def predict(self, state):
         pos = state.gamestate_to_statedict()["ghosts_coord"]
@@ -404,6 +486,7 @@ class GhostAgent:
             self.scaler.update()
 
     def train_batch(self, traj, batch_size=32):
+        loss_return = []
         for i in range(0, len(traj), batch_size):
             batch = traj[i:i + batch_size]
             states = []
@@ -420,6 +503,9 @@ class GhostAgent:
                 state_batch = torch.cat(states)
                 prob_ghost = torch.stack(probs_ghost).view(-1, 125)
                 value_ghost = torch.stack(values_ghost).view(-1, 1)
+
+                # prob_ghost = torch.tensor(probs_ghost, dtype=torch.float32, device=device).view(-1, 125)
+                # value_ghost = torch.tensor(values_ghost, dtype=torch.float32, device=device).view(-1, 1)
             
             with autocast('cuda'):
                 prob_ghost_predict, value_ghost_predict = self.ValueNet(state_batch)
@@ -431,9 +517,13 @@ class GhostAgent:
             self.scaler.scale(loss).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            
+            loss_return.append(loss)
+
+        return loss_return[-1]
 
 class AlphaZeroTrainer:
-    def __init__(self, env, pacman, ghost, c_puct, iterations=100, episodes=1, check_time=1, search_time=120):
+    def __init__(self, env, pacman, ghost, c_puct, iterations=100, episodes=32, check_time=5, search_time=32):
         self.env=env
 
         self.pacman=pacman
@@ -483,22 +573,29 @@ class AlphaZeroTrainer:
 
     def train(self):
         for ite in range(self.iterations):
+            print(f"ite {ite}")
+            t=time.time()
             trajs=[]
             for epi in range(self.episodes):
                 traj, _, _ = self.play()
                 trajs.append(traj)
+            t=time.time()-t
+            print(f"self_play time {t}")
+            t=time.time()
             loss_pacman, loss_ghost = self.learn(trajs)
+            t=time.time()-t
+            print(f"learning time {t}")
 
             score_pacman=0.0
             score_ghost=0.0
             for check in range(self.check_time):
                 _, reward_pacman, reward_ghost = self.play()
                 score_pacman+=reward_pacman
-                score_ghost+=reward_ghost
+                score_ghost+=sum(reward_ghost)
             score_pacman/=self.check_time
             score_ghost/=self.check_time
             
-            print(f"Iteration: {ite}/{self.iterations}, loss_pacman = {loss_pacman}, loss_ghost = {loss_ghost}, score_pacman = {score_pacman}, score_ghost = {score_ghost}")
+            print(f"Iteration: {ite+1}/{self.iterations}, loss_pacman = {loss_pacman}, loss_ghost = {loss_ghost}, score_pacman = {score_pacman}, score_ghost = {score_ghost}")
 
             if(score_pacman+score_ghost>self.best_score):
                 print(f"NEW  BEST with score {score_pacman+score_ghost}")
@@ -506,9 +603,6 @@ class AlphaZeroTrainer:
                 self.ghost.save_model()
 
 if __name__ == "__main__":
-    import time
-    from core.GymEnvironment import *
-    
     env=PacmanEnvDecorator()
     env.reset(mode="local")
     pacman = PacmanAgent()
@@ -522,15 +616,23 @@ if __name__ == "__main__":
     print(f"time:{t}")
 
     print("TEST of mcts")
+    print("Running search:")
     env.reset()
     t=time.time()
-    mcts = MCTS(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, num_simulations=15)
-    mcts.run()
+    mcts = MCTS(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, num_simulations=16)
+    # mcts.run()
+    t=time.time()-t
+    print(f"time:{t}")
+    print("Running batch:")
+    env.reset()
+    t=time.time()
+    mcts = MCTS(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, num_simulations=16)
+    # mcts.run_batch()
     t=time.time()-t
     print(f"time:{t}")
 
     print("TEST of self play")
-    SEARCH_TIME=15
+    SEARCH_TIME=16
     env.reset()
     t=time.time()
     trainer = AlphaZeroTrainer(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, search_time=SEARCH_TIME)
@@ -545,17 +647,22 @@ if __name__ == "__main__":
         env.reset(mode="local")
 
         prob_pacman = torch.rand(5).to(device)
+        # prob_pacman = np.random.rand(5)
         prob_pacman = prob_pacman / prob_pacman.sum()
         value_pacman = torch.rand(1).to(device)
+        #value_pacman = np.random.rand(1)
 
         prob_ghost = torch.rand(125).to(device)
+        # prob_ghost = np.random.rand(125)
         prob_ghost = prob_ghost / prob_ghost.sum()
         value_ghost = torch.rand(1).to(device)
+        # value_ghost = np.random.rand(1)
 
         dummy1 = 0.0
         dummy2 = 0.0
         
         traj.append((state, prob_pacman, value_pacman, prob_ghost, value_ghost, dummy1, dummy2))
+    
     print("Running train:")
     t=time.time()
     pacman.train(traj)
@@ -566,5 +673,14 @@ if __name__ == "__main__":
     t=time.time()
     pacman.train_batch(traj)
     ghost.train_batch(traj)
+    t=time.time()-t
+    print(f"time:{t}")
+
+    print("TEST of alphazero train")
+    SEARCH_TIME=5
+    env.reset()
+    t=time.time()
+    trainer = AlphaZeroTrainer(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, iterations=1, episodes=1, check_time=1, search_time=SEARCH_TIME)
+    trainer.train()
     t=time.time()-t
     print(f"time:{t}")
