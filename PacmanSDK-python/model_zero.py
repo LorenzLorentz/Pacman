@@ -23,7 +23,7 @@ from utils.ghostact_int2list import *
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 time_short = datetime.datetime.now().strftime('%H%M')
 time_long = datetime.datetime.now().strftime('%m%d%H%M')
-sys.stdout = open(f'output_{time_short}.log', 'w')
+sys.stdout = open(f'log_zero/output_{time_short}.log', 'w')
 
 class PacmanEnvDecorator:
     def __init__(self, env=None):
@@ -255,8 +255,12 @@ class MCTS:
         selected_action_pacman = torch.multinomial(prob_pacman, 1) #torch.random.choice(torch.arange(5), p=prob_pacman)
         selected_action_ghost = torch.multinomial(prob_ghost, 1) # torch.random.choice(torch.arange(125), p=prob_ghost)
 
-        selected_action_pacman = 0 if self.root.P_pacman[selected_action_pacman] != 0 else 0
-        selected_action_ghost = 0 if self.root.P_ghost[selected_action_ghost] != 0 else 0
+        # print("!!!", "0", sum_visits)
+        # print("!!!!", "1", prob_pacman.shape, prob_pacman, selected_action_pacman)
+        # print("!!!!", "2", prob_ghost.shape, prob_ghost, selected_action_ghost)
+
+        selected_action_pacman = selected_action_pacman.item() if self.root.P_pacman[selected_action_pacman.item()] != 0 else 0
+        selected_action_ghost = selected_action_ghost.item() if self.root.P_ghost[selected_action_ghost.item()] != 0 else 0
 
         decision_pacman = (selected_action_pacman, prob_pacman, torch.tensor(self.root.Q_pacman, dtype=torch.float32, device=device))
         decision_ghost = (selected_action_ghost, prob_ghost, torch.tensor(self.root.Q_ghost, dtype=torch.float32, device=device))
@@ -523,7 +527,7 @@ class GhostAgent:
         return loss_return[-1]
 
 class AlphaZeroTrainer:
-    def __init__(self, env, pacman, ghost, c_puct, iterations=100, episodes=32, check_time=5, search_time=32):
+    def __init__(self, env, pacman, ghost, c_puct, iterations=10, episodes=32, check_time=5, search_time=32):
         self.env=env
 
         self.pacman=pacman
@@ -547,6 +551,8 @@ class AlphaZeroTrainer:
         reward_pacman=0.0
         reward_ghost=0.0
         # step=0
+
+        print("\n")
         while True:
             decision_pacman, decision_ghost = self.decide()
             selected_action_pacman, action_prob_pacman, value_pacman = decision_pacman
@@ -554,7 +560,7 @@ class AlphaZeroTrainer:
             dict, reward_pacman, reward_ghost, done, eatAll = self.env.step(selected_action_pacman, ghostact_int2list(selected_action_ghost))
             state=self.env.game_state()
             traj.append((state, action_prob_pacman, value_pacman, action_prob_ghost, value_ghost, reward_pacman, reward_ghost))
-            
+            print(f"pacman action: {selected_action_pacman}, ghost action {ghostact_int2list(selected_action_ghost)} \n")
             # step+=1
             # if(step%10==0):
             #    print("step: {}, round: {}".format(step, dict["round"]))
@@ -568,7 +574,7 @@ class AlphaZeroTrainer:
         for traj in trajs:
             loss_pacman=self.pacman.train_batch(traj)
             loss_ghost=self.ghost.train_batch(traj)
-        self.env.reset()
+        # self.env.reset()
         return (loss_pacman, loss_ghost)
 
     def train(self):
@@ -576,7 +582,10 @@ class AlphaZeroTrainer:
             print(f"ite {ite}")
             t=time.time()
             trajs=[]
+            self.env.reset()
+            inistate=self.env.game_state()
             for epi in range(self.episodes):
+                self.env.restore(inistate)
                 traj, _, _ = self.play()
                 trajs.append(traj)
             t=time.time()-t
@@ -589,6 +598,7 @@ class AlphaZeroTrainer:
             score_pacman=0.0
             score_ghost=0.0
             for check in range(self.check_time):
+                self.env.reset()
                 _, reward_pacman, reward_ghost = self.play()
                 score_pacman+=reward_pacman
                 score_ghost+=sum(reward_ghost)
@@ -620,7 +630,7 @@ if __name__ == "__main__":
     env.reset()
     t=time.time()
     mcts = MCTS(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, num_simulations=16)
-    # mcts.run()
+    mcts.run()
     t=time.time()-t
     print(f"time:{t}")
     print("Running batch:")
@@ -680,7 +690,7 @@ if __name__ == "__main__":
     SEARCH_TIME=5
     env.reset()
     t=time.time()
-    trainer = AlphaZeroTrainer(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, iterations=1, episodes=1, check_time=1, search_time=SEARCH_TIME)
+    trainer = AlphaZeroTrainer(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, iterations=1, episodes=3, check_time=2, search_time=SEARCH_TIME)
     trainer.train()
     t=time.time()-t
     print(f"time:{t}")
