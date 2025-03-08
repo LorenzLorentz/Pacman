@@ -33,7 +33,7 @@ EPSILON_END = 0.1
 EPSILON_DECAY = 10
 TARGET_UPDATE = 1
 MEMORY_SIZE = 100
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 1e-2
 
 # initialize networks
 policy_net_pacman = PacmanNet(4, 5, 40)
@@ -67,8 +67,8 @@ target_net_ghost.eval()
 policy_net_ghost.to(device)
 target_net_ghost.to(device)
 
-optimizer_pacman = optim.Adam(policy_net_pacman.parameters(), lr=LEARNING_RATE)
-optimizer_ghost = optim.Adam(policy_net_ghost.parameters(), lr=LEARNING_RATE)
+optimizer_pacman = optim.SGD(policy_net_pacman.parameters(), lr=LEARNING_RATE)
+optimizer_ghost = optim.SGD(policy_net_ghost.parameters(), lr=LEARNING_RATE)
 memory = []
 
 Transition = namedtuple(

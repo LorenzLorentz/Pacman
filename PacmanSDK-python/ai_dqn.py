@@ -1,8 +1,8 @@
 from core.gamedata import GameState
 from core.GymEnvironment import PacmanEnv
 from model import *
-from train import state_dict_to_tensor
-import sys  
+from utils.state_dict_to_tensor import *
+import sys
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -27,7 +27,7 @@ class PacmanAI:
             print(op,file=sys.stderr)
         return [op.item()]
 
-ai_func = PacmanAI().__call__
+ai_func = PacmanAI()
 __all__ = ["ai_func"]
 
 if __name__ == "__main__":

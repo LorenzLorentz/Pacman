@@ -23,7 +23,7 @@ from utils.ghostact_int2list import *
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 time_short = datetime.datetime.now().strftime('%H%M')
 time_long = datetime.datetime.now().strftime('%m%d%H%M')
-sys.stdout = open(f'log_zero/output_{time_short}.log', 'w')
+# sys.stdout = open(f'log_zero/output_{time_short}.log', 'w')
 
 class PacmanEnvDecorator:
     def __init__(self, env=None):
@@ -46,6 +46,7 @@ class PacmanEnvDecorator:
     def game_state(self):
         return self.env.game_state()
 
+""""
 class MCTSNode:
     def __init__(self, env, done=False, parent=None):
         self.env=copy.deepcopy(env)
@@ -229,6 +230,33 @@ class MCTS:
             self.search(self.root)
         return self.decide()
 
+    def play_game_pacman(self):
+        self.root = MCTSNode(self.env)
+        for _ in range(self.num_simulations):
+            self.search(self.root)
+        visits_pacman = torch.zeros(5, dtype=torch.float32, device=device)
+        visits_ghost = torch.zeros(125, dtype=torch.float32, device=device)
+        sum_visits = 0.0
+        
+        pos_pacman = self.state.gamestate_to_statedict()["pacman_coord"]
+        legal_action_pacman = get_valid_moves_pacman(pos_pacman, self.state)
+        pos_ghost = self.state.gamestate_to_statedict()["ghosts_coord"]
+        legal_action_ghost = get_valid_moves_ghost(pos_ghost, self.state)
+
+        for action_pacman in legal_action_pacman:
+            for action_ghost in legal_action_ghost:
+                node = self.root.children_matrix[action_pacman][action_ghost]
+                if node is not None:
+                    visits_pacman[action_pacman] += node.N
+                    visits_ghost[action_ghost] += node.N
+                    sum_visits += node.N ** self.temp_inverse
+
+        sum_visits = sum_visits if sum_visits != 0.0 else 1e-8
+
+        prob_pacman = (visits_pacman ** self.temp_inverse) / sum_visits
+        selected_action_pacman = torch.multinomial(prob_pacman, 1) #torch.random.choice(torch.arange(5), p=prob_pacman)
+        return selected_action_pacman.cpu().numpy().tolist() if self.root.P_pacman[selected_action_pacman.item()] != 0 else [0]
+
     def decide(self):
         visits_pacman = torch.zeros(5, dtype=torch.float32, device=device)
         visits_ghost = torch.zeros(125, dtype=torch.float32, device=device)
@@ -266,6 +294,7 @@ class MCTS:
         decision_ghost = (selected_action_ghost, prob_ghost, torch.tensor(self.root.Q_ghost, dtype=torch.float32, device=device))
 
         return decision_pacman, decision_ghost
+"""
 
 class ResidualBlock(nn.Module):
     def __init__(self, num_filters):
@@ -451,7 +480,7 @@ class GhostAgent:
     
     def init_weight(self, model):
         if self.series:
-            name = f"model/pacman_zero_{self.series}.pth"
+            name = f"model/ghost_zero_{self.series}.pth"
             if os.path.exists(name):
                 model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
         else:
@@ -543,7 +572,7 @@ class AlphaZeroTrainer:
         self.best_score=0.0
 
     def decide(self):
-        mcts=MCTS(self.env, self.pacman, self.ghost, self.c_puct, num_simulations=self.search_time)
+        mcts=mcts_module.MCTS(self.env, self.pacman, self.ghost, self.c_puct, num_simulations=self.search_time)
         return mcts.run()
 
     def play(self):
@@ -608,6 +637,7 @@ class AlphaZeroTrainer:
             print(f"Iteration: {ite+1}/{self.iterations}, loss_pacman = {loss_pacman}, loss_ghost = {loss_ghost}, score_pacman = {score_pacman}, score_ghost = {score_ghost}")
 
             if(score_pacman+score_ghost>self.best_score):
+                self.best_score=score_ghost+score_pacman
                 print(f"NEW  BEST with score {score_pacman+score_ghost}")
                 self.pacman.save_model()
                 self.ghost.save_model()
@@ -629,14 +659,14 @@ if __name__ == "__main__":
     print("Running search:")
     env.reset()
     t=time.time()
-    mcts = MCTS(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, num_simulations=16)
+    mcts = mcts_module.MCTS(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, num_simulations=16)
     mcts.run()
     t=time.time()-t
     print(f"time:{t}")
     print("Running batch:")
     env.reset()
     t=time.time()
-    mcts = MCTS(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, num_simulations=16)
+    mcts = mcts_module.MCTS(env=env, pacman=pacman, ghost=ghost, c_puct=1.25, num_simulations=16)
     # mcts.run_batch()
     t=time.time()-t
     print(f"time:{t}")
