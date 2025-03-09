@@ -1,4 +1,5 @@
 import os
+import datetime
 import numpy as np
 import torch
 import torch.nn as nn
@@ -100,31 +101,39 @@ class ValueNet(nn.Module):
         return p, v
 
 class PacmanAgent:
-    def __init__(self, batch_size=32, series=None):
-        self.series=series
+    def __init__(self, batch_size=32, load_series=None, save_series=None):
+        self.load_series=load_series
+        self.save_series=save_series
         
         self.ValueNet=ValueNet(if_Pacman=True)
-        self.optimizer=optim.Adam(self.ValueNet.parameters())
+        # self.optimizer=optim.Adam(self.ValueNet.parameters())
+        self.optimizer=optim.SGD(self.ValueNet.parameters(), lr=1e-2)
         self.scaler = GradScaler('cuda')
         
         self.init_weight(self.ValueNet)
         self.ValueNet.to(device)
         self.batch_size=batch_size
     
-    def init_weight(self, model):
-        if(self.series):
-            name = f"model/pacman_zero_{self.series}.pth"
+    def init_weight(self, model, load_name=None):
+        if load_name:
+            model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
+            return
+        if self.load_series:
+            name = f"model/pacman_zero_{self.load_series}.pth"
             if os.path.exists(name):
                 model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
-            else:
-                print("No checkpoint found. Training from scratch.")
-                model.init_weights()
-        else:
-            print("No checkpoint found. Training from scratch.")
-            model.init_weights()
+                return
+        print("No checkpoint found. Training from scratch.")
+        model.init_weights()
 
-    def save_model(self, name):
-        torch.save(self.ValueNet.state_dict(), name)
+    def save_model(self, save_name=None):
+        if save_name:
+            torch.save(self.ValueNet.state_dict(), save_name)
+            return
+        if self.save_series:
+            torch.save(self.ValueNet.state_dict(), f"model/pacman_zero_{self.save_series}.pth")
+            return
+        torch.save(self.ValueNet.state_dict(), f"model/pacman_zero_{datetime.strptime(datetime.datetime.now(), '%m%d%H%M')}.pth")
     
     def predict(self, state):
         # input: state as type: gamestate
@@ -141,7 +150,7 @@ class PacmanAgent:
         act_probs_legal=torch.zeros_like(act_probs)
         act_probs_legal[legal_action]=act_probs[legal_action]
 
-        selected_action = torch.multinomial(act_probs_legal, 1)
+        selected_action = torch.multinomial(act_probs_legal, 1).item()
 
         return selected_action, act_probs_legal, value
     
@@ -154,11 +163,11 @@ class PacmanAgent:
     def ppo_train(self, states_tensor, legal_actions_mask, old_prob, actions, td_target, advantages, eps):
         with autocast('cuda'):
             _, new_prob, new_values=self.predict_batch(states_tensor, legal_actions_mask)
-            new_prob=new_prob.gather(actions)
+            new_prob=new_prob.gather(1, actions.unsqueeze(1)).squeeze(1)
             ratio=new_prob/old_prob
-            
-            loss_actor=torch.mean(torch.min(ratio*advantages, torch.clamp(ratio, 1-eps, 1+eps)*advantages))
-            loss_critic=torch.mean(F.mse_loss(td_target, new_values))
+
+            loss_actor=-torch.mean(torch.min(ratio*advantages, torch.clamp(ratio, 1-eps, 1+eps)*advantages))
+            loss_critic=F.mse_loss(td_target, new_values.squeeze())
             
             loss=loss_actor+loss_critic
 
@@ -166,6 +175,8 @@ class PacmanAgent:
         self.scaler.scale(loss).backward()
         self.scaler.step(self.optimizer)
         self.scaler.update()
+
+        print(f"    loss_pacman:{loss}")
 
     def zero_train(self, traj):
         # traj.append((state, prob_pacman, value_pacman, prob_ghost, value_ghost, reward_pacman, reward_ghost))
@@ -219,31 +230,39 @@ class PacmanAgent:
         return loss_return[-1]
     
 class GhostAgent:
-    def __init__(self, batch_size=32, series=None):
-        self.series=series
+    def __init__(self, batch_size=32, load_series=None, save_series=None):
+        self.save_series=save_series
+        self.load_series=load_series
         
         self.ValueNet=ValueNet(if_Pacman=False)
-        self.optimizer=optim.Adam(self.ValueNet.parameters())
+        # self.optimizer=optim.Adam(self.ValueNet.parameters())
+        self.optimizer=optim.SGD(self.ValueNet.parameters(), lr=1e-2)
         self.scaler = GradScaler('cuda')
         
         self.init_weight(self.ValueNet)
         self.ValueNet.to(device)
         self.batch_size=batch_size
     
-    def init_weight(self, model):
-        if self.series:
-            name = f"model/ghost_zero_{self.series}.pth"
+    def init_weight(self, model, load_name=None):
+        if load_name:
+            model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
+            return
+        if self.load_series:
+            name = f"model/ghost_zero_{self.load_series}.pth"
             if os.path.exists(name):
                 model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
-            else:
-                print("No checkpoint found. Training from scratch.")
-                model.init_weights()
-        else:
-            print("No checkpoint found. Training from scratch.")
-            model.init_weights()
+                return
+        print("No checkpoint found. Training from scratch.")
+        model.init_weights()
 
-    def save_model(self, name):
-        torch.save(self.ValueNet.state_dict(), name)
+    def save_model(self, save_name=None):
+        if save_name:
+            torch.save(self.ValueNet.state_dict(), save_name)
+            return
+        if self.save_series:
+            torch.save(self.ValueNet.state_dict(), f"model/ghost_zero_{self.save_series}.pth")
+            return
+        torch.save(self.ValueNet.state_dict(), f"model/ghost_zero_{datetime.strptime(datetime.datetime.now(), '%m%d%H%M')}.pth")
 
     def predict(self, state):
         pos = state.gamestate_to_statedict()["ghosts_coord"]
@@ -257,7 +276,7 @@ class GhostAgent:
         act_prob_legal=torch.zeros_like(act_prob)
         act_prob_legal[legal_actions]=act_prob[legal_actions]
 
-        seleted_action = torch.multinomial(act_prob_legal, 1)
+        seleted_action = torch.multinomial(act_prob_legal, 1).item()
 
         return seleted_action, act_prob, value
     
@@ -270,11 +289,11 @@ class GhostAgent:
     def ppo_train(self, states_tensor, legal_actions_mask, old_prob, actions, td_target, advantages, eps):
         with autocast('cuda'):
             _, new_prob, new_values=self.predict_batch(states_tensor, legal_actions_mask)
-            new_prob=new_prob.gather(actions)
+            new_prob=new_prob.gather(1, actions.unsqueeze(1)).squeeze(1)
             ratio=new_prob/old_prob
             
-            loss_actor=torch.mean(torch.min(ratio*advantages, torch.clamp(ratio, 1-eps, 1+eps)*advantages))
-            loss_critic=torch.mean(F.mse_loss(td_target, new_values))
+            loss_actor=-torch.mean(torch.min(ratio*advantages, torch.clamp(ratio, 1-eps, 1+eps)*advantages))
+            loss_critic=F.mse_loss(td_target, new_values.squeeze())
             
             loss=loss_actor+loss_critic
 
@@ -282,6 +301,8 @@ class GhostAgent:
         self.scaler.scale(loss).backward()
         self.scaler.step(self.optimizer)
         self.scaler.update()
+
+        print(f"    loss_ghost:{loss}")
 
     def zero_train(self, traj):
         for point in traj:

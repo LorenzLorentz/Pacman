@@ -53,7 +53,7 @@ def get_valid_moves_ghost(pos, game_state):
     return moves
 
 def get_valid_moves_pacman_mask(pos, game_state):
-    mask = torch.zeros(5, dtype=np.int8, device=device)
+    mask = torch.zeros(5).to(device)
     directions = [
         (np.array(list(Update.UP.value)), Direction.UP.value),      # UP
         (np.array(list(Update.LEFT.value)), Direction.LEFT.value),  # LEFT
@@ -63,11 +63,11 @@ def get_valid_moves_pacman_mask(pos, game_state):
     for direction, move_num in directions:
         new_pos = pos + direction
         if is_valid_position(new_pos, game_state):
-            mask[move_num] = 0
+            mask[move_num] = 1
     return mask
 
 def get_valid_moves_ghosts_mask(pos, game_state):
-    mask = torch.zeros(125, dtype=np.int8, device=device)
+    mask = torch.zeros(125).to(device)
     directions = [
         (np.array(list(Update.UP.value)), Direction.UP.value),  # UP
         (np.array(list(Update.LEFT.value)), Direction.LEFT.value),  # LEFT
