@@ -133,7 +133,8 @@ class PacmanAgent:
         if self.save_series:
             torch.save(self.ValueNet.state_dict(), f"model/pacman_zero_{self.save_series}.pth")
             return
-        torch.save(self.ValueNet.state_dict(), f"model/pacman_zero_{datetime.strptime(datetime.datetime.now(), '%m%d%H%M')}.pth")
+        time=datetime.datetime.now().strftime("%m%d%H%M")
+        torch.save(self.ValueNet.state_dict(), f"model/pacman_zero_{time}.pth")
     
     def predict(self, state):
         # input: state as type: gamestate
@@ -262,7 +263,8 @@ class GhostAgent:
         if self.save_series:
             torch.save(self.ValueNet.state_dict(), f"model/ghost_zero_{self.save_series}.pth")
             return
-        torch.save(self.ValueNet.state_dict(), f"model/ghost_zero_{datetime.strptime(datetime.datetime.now(), '%m%d%H%M')}.pth")
+        time=datetime.datetime.now().strftime("%m%d%H%M")
+        torch.save(self.ValueNet.state_dict(), f"model/pacman_zero_{time}.pth")
 
     def predict(self, state):
         pos = state.gamestate_to_statedict()["ghosts_coord"]

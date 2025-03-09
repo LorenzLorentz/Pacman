@@ -113,8 +113,8 @@ def data_synthesize(data_json, eps=5e-2):
     return trajs
 
 def train_zero_mimic(num_episodes=10):
-    pacman=PacmanAgent()
-    ghost=GhostAgent()
+    pacman=PacmanAgent(load_series='03091346', save_series='03091346')
+    ghost=GhostAgent(load_series='03091346', save_series='03091346')
     best_loss=float('inf')
     for epi in range(num_episodes):
         for filename in os.listdir('matchdata_json'):
@@ -125,8 +125,8 @@ def train_zero_mimic(num_episodes=10):
                     data_json = [json.loads(line) for line in file if line.strip()]
                 trajs=data_synthesize(data_json)
                 for traj in trajs:
-                    loss_pacman=pacman.train_batch(traj)
-                    loss_ghost=ghost.train_batch(traj)
+                    loss_pacman=pacman.zero_train_batch(traj)
+                    loss_ghost=ghost.zero_train_batch(traj)
                     print(f"loss_pacman:{loss_pacman}, loss_ghost:{loss_ghost}")
                     
                     if loss_ghost+loss_pacman < best_loss:
