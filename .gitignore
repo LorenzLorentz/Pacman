@@ -4,3 +4,4 @@ temp.py
 new.py
 test.py
 *.so
+*.pth

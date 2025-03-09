@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.amp import autocast, GradScaler
+# from torch.cuda.amp import autocast, GradScaler
 
 from core.gamedata import *
 from core.GymEnvironment import *
@@ -107,8 +108,9 @@ class PacmanAgent:
         
         self.ValueNet=ValueNet(if_Pacman=True)
         # self.optimizer=optim.Adam(self.ValueNet.parameters())
-        self.optimizer=optim.SGD(self.ValueNet.parameters(), lr=1e-2)
+        self.optimizer=optim.SGD(self.ValueNet.parameters(), lr=5e-2)
         self.scaler = GradScaler('cuda')
+        # self.scaler = GradScaler()
         
         self.init_weight(self.ValueNet)
         self.ValueNet.to(device)
@@ -163,6 +165,7 @@ class PacmanAgent:
     
     def ppo_train(self, states_tensor, legal_actions_mask, old_prob, actions, td_target, advantages, eps):
         with autocast('cuda'):
+        # with autocast():
             _, new_prob, new_values=self.predict_batch(states_tensor, legal_actions_mask)
             new_prob=new_prob.gather(1, actions.unsqueeze(1)).squeeze(1)
             ratio=new_prob/old_prob
@@ -186,6 +189,7 @@ class PacmanAgent:
             state, prob_pacman, value_pacman, _, _, _, _ = point
             # prob_pacman = torch.from_numpy(prob_pacman, device = device)
             with autocast('cuda'):
+            # with autocast():
                 _, prob_pacman_predict, value_pacman_predict = self.predict(state)
                 loss_value = (value_pacman - value_pacman_predict)**2
                 loss_prob = -sum(prob_pacman[action] * torch.log(prob_pacman_predict[action]) for action in range(5))
@@ -216,6 +220,7 @@ class PacmanAgent:
                 value_pacman = torch.stack(values_pacman).to(device).view(-1, 1)
             
             with autocast('cuda'):
+            # with autocast():
                 prob_pacman_predict, value_pacman_predict = self.ValueNet(state_batch)
                 loss_value = F.mse_loss(value_pacman_predict, value_pacman)
                 loss_prob = F.kl_div(torch.log(prob_pacman_predict + 1e-8), prob_pacman, reduction='batchmean')
@@ -237,8 +242,9 @@ class GhostAgent:
         
         self.ValueNet=ValueNet(if_Pacman=False)
         # self.optimizer=optim.Adam(self.ValueNet.parameters())
-        self.optimizer=optim.SGD(self.ValueNet.parameters(), lr=1e-2)
+        self.optimizer=optim.SGD(self.ValueNet.parameters(), lr=5e-2)
         self.scaler = GradScaler('cuda')
+        # self.scaler = GradScaler()
         
         self.init_weight(self.ValueNet)
         self.ValueNet.to(device)
@@ -290,6 +296,7 @@ class GhostAgent:
     
     def ppo_train(self, states_tensor, legal_actions_mask, old_prob, actions, td_target, advantages, eps):
         with autocast('cuda'):
+        # with autocast():
             _, new_prob, new_values=self.predict_batch(states_tensor, legal_actions_mask)
             new_prob=new_prob.gather(1, actions.unsqueeze(1)).squeeze(1)
             ratio=new_prob/old_prob
@@ -311,6 +318,7 @@ class GhostAgent:
             state, _, _, prob_ghost, value_ghost, _, _ = point
             # prob_ghost = torch.from_numpy(prob_ghost, device = device)
             with autocast('cuda'):
+            # with autocast():
                 _, prob_ghost_predict, value_ghost_predict = self.predict(state)
                 loss_value = (value_ghost - value_ghost_predict)**2
                 loss_prob = -sum(prob_ghost[action] * torch.log(prob_ghost_predict[action]) for action in range(15))
@@ -340,6 +348,7 @@ class GhostAgent:
                 value_ghost = torch.stack(values_ghost).view(-1, 1)
             
             with autocast('cuda'):
+            # with autocast():
                 prob_ghost_predict, value_ghost_predict = self.ValueNet(state_batch)
                 loss_value = F.mse_loss(value_ghost_predict, value_ghost)
                 loss_prob = F.kl_div(torch.log(prob_ghost_predict + 1e-8), prob_ghost, reduction='batchmean')
