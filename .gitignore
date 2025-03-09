@@ -2,4 +2,5 @@
 .DS_Store
 temp.py
 new.py
+test.py
 *.so

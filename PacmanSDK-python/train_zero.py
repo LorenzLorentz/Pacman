@@ -1,4 +1,7 @@
-from model_zero import *
+from utils.PacmanEnvDecorator import *
+
+from model import *
+from alpha_zero import *
 
 env = PacmanEnvDecorator()
 env.reset()
