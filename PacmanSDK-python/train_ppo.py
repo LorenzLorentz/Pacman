@@ -8,12 +8,12 @@ from model import *
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class PPO:
-    def __init__(self, env:PacmanEnvDecorator, pacman:PacmanAgent, ghost:GhostAgent, episodes:int=10):
+    def __init__(self, env:PacmanEnvDecorator, pacman:PacmanAgent, ghost:GhostAgent, update_epoch:int=20, episodes:int=10):
         self.GAMMA=0.99
         self.LAMBDA=0.95
-        self.EPS=1
-        self.UPDATE_EPOCH=10
-        
+        self.EPS=0.8
+
+        self.UPDATE_EPOCH=update_epoch
         self.EPISODES=episodes
 
         self.env=env
@@ -110,15 +110,20 @@ class PPO:
             print(f"  update epoch:{_}")
             self.pacman.ppo_train(states_tensor, legal_actions_mask_pacman, old_prob_pacman, actions_pacman, td_target_pacman, advantages_pacman, self.EPS)
             self.ghost.ppo_train(states_tensor, legal_actions_mask_ghost, old_prob_ghost, actions_ghost, td_target_pacman, advantages_ghost, self.EPS)
+        # self.pacman.save_model()
+        # self.ghost.save_model()
 
     def train(self):
         for _ in range(self.EPISODES):
             print(f"Episodes:{_}")
             self.train_step()
+            if _%2==0:
+                self.pacman.save_model()
+                self.ghost.save_model()
 
 if __name__=="__main__":
     env=PacmanEnvDecorator(PacmanEnv())
-    pacman=PacmanAgent()
-    ghost=GhostAgent()
-    ppo=PPO(env, pacman, ghost)
+    pacman=PacmanAgent(load_series="03092227")
+    ghost=GhostAgent(load_series="03092227")
+    ppo=PPO(env, pacman, ghost, episodes=20)
     ppo.train()
