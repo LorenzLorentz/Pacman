@@ -53,7 +53,7 @@ def state_dict_to_tensor(state_dict):
         0
     )
 
-def state2tensor(state):
+def state2tensor(state) -> torch.tensor:
     state_dict=state.gamestate_to_statedict()
     
     board=np.array(state_dict["board"])
@@ -90,3 +90,9 @@ def state2tensor(state):
     state_tensor = torch.tensor(state_stacked, dtype=torch.float32, device=device).unsqueeze(0)
 
     return state_tensor
+
+def state2pacmanout(prob:torch.tensor, reward:float) -> torch.tensor:
+    return torch.cat((prob, torch.tensor([reward], device=device, dtype=torch.float32)), dim=0).to(device)
+
+def state2ghostout(prob:torch.tensor, EATEN:bool) -> torch.tensor:
+    return torch.cat((prob, torch.tensor([EATEN], device=device, dtype=torch.float32)), dim=0).to(device)

@@ -4,13 +4,14 @@ import torch
 
 from core.gamedata import *
 from core.GymEnvironment import *
+from model import *
 from utils.state_dict_to_tensor import *
 from utils.valid_action import *
 from utils.ghostact_int2list import *
 from utils.PacmanEnvDecorator import *
 
 class MCTSNode:
-    def __init__(self, env, done=False, parent=None):
+    def __init__(self, env:PacmanEnvDecorator, done:bool=False, parent=None):
         self.env=copy.deepcopy(env)
         self.state=env.game_state()
         self.state_dict=self.state.gamestate_to_statedict()
@@ -29,13 +30,13 @@ class MCTSNode:
         
         self.expanded=False
 
-    def is_terminal(self):
+    def is_terminal(self) -> bool:
         return self.done
 
-    def is_expanded(self):
+    def is_expanded(self) -> bool:
         return self.expanded
     
-    def expand(self, pacman, ghost):
+    def expand(self, pacman:PacmanAgent, ghost:GhostAgent) -> tuple[float, float]:
         self.expanded=True
 
         with torch.no_grad():
@@ -58,7 +59,7 @@ class MCTSNode:
 
         return value_pacman.item(), value_ghost.item()
 
-    def select(self, c_puct):
+    def select(self, c_puct:float):
         indices=[]
         q_pacman_list=[]
         q_ghost_list=[]
@@ -99,7 +100,7 @@ class MCTSNode:
 
         return best_action_pacman, best_action_ghost, best_child
     
-    def update(self, value):
+    def update(self, value:float):
         value_pacman, value_ghost = value
 
         self.N += 1
@@ -110,7 +111,7 @@ class MCTSNode:
         self.Q_ghost = self.W_ghost / self.N
 
 class MCTS:
-    def __init__(self, env, pacman, ghost, c_puct, temperature=1, num_simulations=120):
+    def __init__(self, env:PacmanEnvDecorator, pacman:PacmanAgent, ghost:GhostAgent, c_puct:float, temperature:float=1, num_simulations:int=120):
         self.env=env
         self.state=env.game_state()
 
@@ -121,7 +122,7 @@ class MCTS:
         self.temp_inverse=1/temperature
         self.num_simulations=num_simulations
 
-    def search(self, node):
+    def search(self, node:MCTSNode):
         if node.is_terminal():
             return node.state_dict["score"]
         
@@ -137,7 +138,7 @@ class MCTS:
 
         return value
     
-    def run_batch(self, batch_size=8):
+    def run_batch(self, batch_size:int=8):
         self.root = MCTSNode(self.env)
         for _ in range(self.num_simulations // batch_size):
             leaf_nodes = []

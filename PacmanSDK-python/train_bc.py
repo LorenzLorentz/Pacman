@@ -1,138 +1,174 @@
-import os
-import json
 import numpy as np
 import torch
-from gym import spaces
+from torch.utils.data import Dataset, DataLoader
 
+from utils.ghostact_int2list import *
 from core.gamedata import *
 from model import *
+from data import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+class Dataset(Dataset):
+    def __init__(self, data_path):
+        self.data = torch.load(data_path, weights_only=True)
 
-def get_action(last_coord, current_coord):
-    dx = current_coord[0] - last_coord[0]
-    dy = current_coord[1] - last_coord[1]
-    if dx > 0:
-        return Direction.DOWN.value
-    elif dx < 0:
-        return Direction.UP.value
-    elif dy > 0:
-        return Direction.RIGHT.value
-    elif dy < 0:
-        return Direction.LEFT.value
-    else:
-        return Direction.STAY.value
+        # data = torch.load(data_path)
+        # if isinstance(data, list) and isinstance(data[0], list):
+        #     self.data = [item for batch in data for item in batch]
+        # else:
+        #     self.data = data
 
-def data_synthesize(data_json, eps=5e-2):
-    trajs = []
-    traj = []
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        return self.data[idx]
 
-    board = None
-    board_size = None
-    beannumber = None
-    portal_coord = None
-    last_pacman_coord = None
-    last_ghosts_coord = None
-    last_score = None
+class Trainer:
+    def __init__(self, agent, train_loader, val_loader, test_loader, num_epochs=10, num_test=5):
+        self.agent = agent
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.test_loader = test_loader
+        self.num_epochs = num_epochs
+        self.num_test = num_test
 
-    for event in data_json:
-        if "board" in event:
-            board = np.array(event["board"]).copy()
-            board_size = event["board_size"]
-            beannumber = event["beannumber"]
-            portal_coord = event["portal_coord"]
-            last_pacman_coord = event["pacman_coord"]
-            last_ghosts_coord = event["ghosts_coord"]
-            last_score = event["score"]
-            if len(traj) > 0:
-                trajs.append(traj)
-            traj=[]
-            continue
+    def train(self):
+        self.agent.ValueNet.train()
+        for epoch in range(self.num_epochs):
+            total_loss = 0.0
+            total_policy_loss = 0.0
+            total_value_loss = 0.0
+            num_batches = 0
+            
+            for batch in self.train_loader:
+                inputs, targets = zip(*batch)
+                inputs = torch.stack(inputs).to(device)
+                target_policies = torch.stack([t[0] for t in targets]).to(device)
+                target_values = torch.stack([t[1] for t in targets]).to(device)
+
+                with autocast("cuda"):
+                    p, v = self.agent.ValueNet(inputs)
+                    loss_policy = -torch.sum(target_policies*torch.log(p+1e-8)) / inputs.size(0)
+                    loss_value = torch.mean((target_values.view(-1) - v.view(-1))**2)
+                    loss = loss_policy + loss_value
+                
+                self.agent.optimizer.zero_grad()
+                self.agent.scaler.scale(loss).backward()
+                self.agent.scaler.step(self.agent.optimizer)
+                self.agent.scaler.update()
+
+                total_loss += loss.item()
+                total_policy_loss += loss_policy.item()
+                total_value_loss += loss_value.item()
+                num_batches += 1
+
+            print(f"Epoch {epoch+1}/{self.num_epochs}, Loss: {total_loss/num_batches:.4f}, "
+                  f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
+            self.validate(epoch)
+
+            if (epoch+1)%self.num_test==0:
+                self.test()
+
+    def validate(self, epoch):
+        self.agent.ValueNet.eval()
+        total_loss = 0.0
+        total_policy_loss = 0.0
+        total_value_loss = 0.0
+        num_batches = 0
         
-        current_pacman_coord = event["pacman_coord"]
-        current_ghosts_coord = event["ghosts_coord"]
-        current_score = event["score"]
+        with torch.no_grad():
+            for batch in self.val_loader:
+                inputs, targets = zip(*batch)
+                inputs = torch.stack(inputs).to(self.device)
+                target_policies = torch.stack([t[0] for t in targets]).to(device)
+                target_values = torch.stack([t[1] for t in targets]).to(device)
+                
+                p, v = self.agent.ValueNet(inputs)
+                loss_policy = -torch.sum(target_policies*torch.log(p+1e-8)) / inputs.size(0)
+                loss_value = torch.mean((target_values.view(-1) - v.view(-1))**2)
+                loss = loss_policy+loss_value
 
-        pacman_action = get_action(last_pacman_coord, current_pacman_coord)
-        ghost_action = [get_action(last_ghosts_coord[i], current_ghosts_coord[i]) for i in range(3)]
+                total_loss += loss.item()
+                total_policy_loss += loss_policy.item()
+                total_value_loss += loss_value.item()
+                num_batches += 1
 
-        for point in event["pacman_step_block"]:
-            point = [int(p) for p in point]
-            if (0 <= point[0] < len(board) and 0 <= point[1] < len(board[0])):
-                if board[point[0]][point[1]] in [Space.REGULAR_BEAN, Space.BONUS_BEAN]:
-                    board[point[0]][point[1]] = Space.EMPTY
-                    beannumber -= 1
+        print(f"Validation Epoch {epoch+1}: Loss: {total_loss/num_batches:.4f}, "
+                f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
+    
+    def test(self):
+        self.agent.ValueNet.eval()
 
-        gamestate = GameState(
-            space_info={
-                "observation_space": spaces.MultiDiscrete(np.ones((board_size, board_size)) * SPACE_CATEGORY),
-                "pacman_action_space": spaces.Discrete(OPERATION_NUM),
-                "ghost_action_space": spaces.MultiDiscrete(np.ones(3) * OPERATION_NUM),
-            },
-            level=event["level"],
-            round=event["round"],
-            board_size=board_size,
-            board=board,
-            pacman_skill_status=event["pacman_skills"],
-            pacman_pos=current_pacman_coord,
-            ghosts_pos=current_ghosts_coord,
-            pacman_score=current_score[0],
-            ghosts_score=current_score[1],
-            beannumber=beannumber,
-            portal_available=event["portal_available"],
-            portal_coord=portal_coord,
-        )
+        is_pacman = (self.agent.ValueNet.policy_fc.out_features==5)
+        total_v_error = 0.0
+        total_p_error = 0.0
+        
+        num_points = 0
+        eps = 1e-8
+        
+        with torch.no_grad():
+            for batch in self.test_loader:
+                inputs, targets = zip(*batch)
+                inputs = torch.stack(inputs).to(device)
+                target_policies = torch.stack([t[:-1] for t in targets]).to(device)
+                target_values = torch.stack([t[-1] for t in targets]).to(device)
 
-        pacman_reward = current_score[0]
-        ghost_reward = current_score[1]
+                with autocast("cuda"):
+                    p, v = self.agent.ValueNet(inputs)
 
-        pacman_prob=torch.zeros([5], device=device, dtype=torch.float32)
-        ghost_prob=torch.zeros([125], device=device, dtype=torch.float32)
+                for i in range(inputs.size(0)):
+                    num_points += 1
+                    v_pred = v[i].item()
+                    v_target = target_values[i].item()
+                    rel_error = abs(v_pred-v_target)/max(abs(v_target), eps)
+                    error_v = rel_error if rel_error<=0.05 else 1.0
+                    total_v_error += error_v
 
-        pacman_prob[:]=eps/5
-        pacman_prob[pacman_action]+=1-eps
+                    if is_pacman:
+                        pred_action = torch.argmax(p[i]).item()
+                        target_action = torch.argmax(target_policies[i]).item()
+                        error_p = 0.0 if pred_action == target_action else 1.0
+                    else:
+                        pred_action_int = torch.argmax(p[i]).item()
+                        target_action_int = torch.argmax(target_policies[i]).item()
+                        pred_action_list = ghostact_int2list(pred_action_int)
+                        target_action_list = ghostact_int2list(target_action_int)
+                        mismatches = sum([1 for a, b in zip(pred_action_list, target_action_list) if a != b])
+                        if mismatches == 0:
+                            error_p = 0.0
+                        elif mismatches == 1:
+                            error_p = 0.5
+                        else:
+                            error_p = 1.0
+                    total_policy_error += error_p
+                
+        print(f"Test: Prob acc: {1-total_p_error/num_points}, Value acc: {1-total_v_error/num_points}")
 
-        ghost_prob[:]=eps/125
-        for _ in range(5):
-            ghost_prob[_ + ghost_action[1]*5 + ghost_action[2]*25] += (1-eps)/2/15
-            ghost_prob[ghost_action[0] + _*5 + ghost_action[2]*25] += (1-eps)/2/15
-            ghost_prob[ghost_action[0] + ghost_action[1]*5 + _*25] += (1-eps)/2/15
-        ghost_prob[ghost_action[0] + ghost_action[1]*5 + ghost_action[2]*25] += (1-eps)/2
+if __name__ == '__main__':
+    batch_size = 512
+    num_epochs = 20
 
-        point = (gamestate, pacman_prob, torch.tensor(pacman_reward, device=device, dtype=torch.float32), 
-                 ghost_prob, torch.tensor(ghost_reward, device=device, dtype=torch.float32), None, None)
-        traj.append(point)
+    train_dataset_pacman = Dataset("data/train_dataset_pacman.pt")
+    val_dataset_pacman = Dataset("data/val_dataset_pacman.pt")
+    test_dataset_pacman = DataLoader("data/test_data_pacman.pt")
+    train_loader_pacman = DataLoader(train_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=4)
+    val_loader_pacman = DataLoader(val_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=4)
+    test_loader_pacman = DataLoader(test_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=4)
 
-        last_pacman_coord = current_pacman_coord
-        last_ghosts_coord = current_ghosts_coord
-        last_score = current_score
+    train_dataset_ghost = Dataset("data/train_dataset_ghost.pt")
+    val_dataset_ghost = Dataset("data/val_dataset_ghost.pt")
+    test_dataset_ghost = DataLoader("data/test_data_ghost.pt")
+    train_loader_ghost = DataLoader(train_dataset_ghost, batch_size=batch_size, shuffle=True, num_workers=4)
+    val_loader_ghost = DataLoader(val_dataset_ghost, batch_size=batch_size, shuffle=True, num_workers=4)
+    test_loader_ghost = DataLoader(test_dataset_ghost, batch_size=batch_size, shuffle=True, num_workers=4)
+    
+    pacman = PacmanAgent()
+    trainer = Trainer(pacman, train_loader_pacman, val_loader_pacman, test_dataset_pacman, num_epochs=num_epochs)
+    trainer.train()
+    pacman.save_model()
 
-    if len(traj) > 0:
-        trajs.append(traj)
-
-    return trajs
-
-def train_zero_mimic(num_episodes=10):
-    pacman=PacmanAgent(load_series='03091346', save_series='03091346')
-    ghost=GhostAgent(load_series='03091346', save_series='03091346')
-    best_loss=float('inf')
-    for epi in range(num_episodes):
-        for filename in os.listdir('matchdata_json'):
-            if filename.endswith('.jsonl'):
-                file_path = os.path.join('matchdata_json', filename)
-                print("!!!", file_path)
-                with open(file_path, 'r', encoding='utf-8') as file:
-                    data_json = [json.loads(line) for line in file if line.strip()]
-                trajs=data_synthesize(data_json)
-                for traj in trajs:
-                    loss_pacman=pacman.zero_train_batch(traj)
-                    loss_ghost=ghost.zero_train_batch(traj)
-                    print(f"loss_pacman:{loss_pacman}, loss_ghost:{loss_ghost}")
-                    
-                    if loss_ghost+loss_pacman < best_loss:
-                        pacman.save_model()
-                        ghost.save_model()
-                        best_loss=loss_pacman+loss_ghost
-
-if __name__=="__main__":
-    train_zero_mimic()
+    # ghost = GhostAgent()
+    # trainer = Trainer(ghost, train_dataset_ghost, val_dataset_ghost, test_dataset_ghost, num_epochs=num_epochs)
+    # trainer.train()
+    # ghost.save_model()
