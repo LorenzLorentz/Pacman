@@ -101,44 +101,71 @@ class ValueNet(nn.Module):
 
         return p, v
 
-class PacmanAgent:
-    def __init__(self, batch_size=32, load_series=None, save_series=None):
+class Agent:
+    def __init__(self, is_pacman:bool, batch_size:int=32, load_series:str=None, save_series:str=None):
+        self.isPacman = is_pacman
+
         self.load_series=load_series
         self.save_series=save_series
         
-        self.ValueNet=ValueNet(if_Pacman=True)
-        # self.optimizer=optim.Adam(self.ValueNet.parameters())
-        self.optimizer=optim.SGD(self.ValueNet.parameters(), lr=5e-2)
+        self.ValueNet=ValueNet(if_Pacman=is_pacman)
+        self.optimizer=optim.Adam(self.ValueNet.parameters())
+        # self.optimizer=optim.SGD(self.ValueNet.parameters(), lr=5e-2)
         self.scaler = GradScaler('cuda')
         # self.scaler = GradScaler()
         
         self.init_weight(self.ValueNet)
         self.ValueNet.to(device)
         self.batch_size=batch_size
+
+    def is_pacman(self) -> bool:
+        return self.isPacman
     
-    def init_weight(self, model, load_name=None):
+    def name(self) -> str:
+        return 'pacman' if self.is_pacman() else 'ghost'
+
+    def init_weight(self, model:ValueNet, load_name:str=None) -> None:
         if load_name:
             model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
             return
         if self.load_series:
-            name = f"model/pacman_zero_{self.load_series}.pth"
+            name = f"model/{self.name()}_{self.load_series}.pth"
             if os.path.exists(name):
                 model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
                 return
         print("No checkpoint found. Training from scratch.")
         model.init_weights()
-
-    def save_model(self, save_name=None):
+    
+    def save_model(self, save_name:str=None):
         if save_name:
             torch.save(self.ValueNet.state_dict(), save_name)
             return
         if self.save_series:
-            torch.save(self.ValueNet.state_dict(), f"model/pacman_zero_{self.save_series}.pth")
+            torch.save(self.ValueNet.state_dict(), f"model/{self.name()}_{self.save_series}.pth")
             return
         time=datetime.datetime.now().strftime("%m%d%H%M")
-        torch.save(self.ValueNet.state_dict(), f"model/pacman_zero_{time}.pth")
+        torch.save(self.ValueNet.state_dict(), f"model/{self.name()}_{time}.pth")
     
-    def predict(self, state):
+    def predict(self, state:GameState):
+        raise NotImplementedError
+    
+    def predict_batch(self, states_tensor:torch.tensor, legal_actions_mask:torch.tensor):
+        raise NotImplementedError
+    
+    def ppo_train(self):
+        raise NotImplementedError
+    
+    def zero_train(self):
+        raise NotImplementedError
+    
+    def zero_train_bacth(self):
+        raise NotImplementedError
+
+class PacmanAgent(Agent):
+    def __init__(self, batch_size:int=32, load_series:str=None, save_series:str=None):
+        super().__init__(is_pacman = True, batch_size=batch_size, load_series=load_series, save_series=save_series)
+    
+    def predict(self, state:GameState):
         # input: state as type: gamestate
         # output: selected_action, action_prob, value
         # in mcts version, actual selected_action is decided other way
@@ -157,7 +184,7 @@ class PacmanAgent:
 
         return selected_action, act_probs_legal, value
     
-    def predict_batch(self, states_tensor, legal_actions_mask):
+    def predict_batch(self, states_tensor:torch.tensor, legal_actions_mask:torch.tensor):
         act_probs, values = self.ValueNet(states_tensor)
         act_probs_legal = act_probs * legal_actions_mask
         selected_actions = torch.multinomial(act_probs_legal, 1)
@@ -235,42 +262,9 @@ class PacmanAgent:
         
         return loss_return[-1]
     
-class GhostAgent:
-    def __init__(self, batch_size=32, load_series=None, save_series=None):
-        self.save_series=save_series
-        self.load_series=load_series
-        
-        self.ValueNet=ValueNet(if_Pacman=False)
-        # self.optimizer=optim.Adam(self.ValueNet.parameters())
-        self.optimizer=optim.SGD(self.ValueNet.parameters(), lr=5e-2)
-        self.scaler = GradScaler('cuda')
-        # self.scaler = GradScaler()
-        
-        self.init_weight(self.ValueNet)
-        self.ValueNet.to(device)
-        self.batch_size=batch_size
-    
-    def init_weight(self, model, load_name=None):
-        if load_name:
-            model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
-            return
-        if self.load_series:
-            name = f"model/ghost_zero_{self.load_series}.pth"
-            if os.path.exists(name):
-                model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
-                return
-        print("No checkpoint found. Training from scratch.")
-        model.init_weights()
-
-    def save_model(self, save_name=None):
-        if save_name:
-            torch.save(self.ValueNet.state_dict(), save_name)
-            return
-        if self.save_series:
-            torch.save(self.ValueNet.state_dict(), f"model/ghost_zero_{self.save_series}.pth")
-            return
-        time=datetime.datetime.now().strftime("%m%d%H%M")
-        torch.save(self.ValueNet.state_dict(), f"model/pacman_zero_{time}.pth")
+class GhostAgent(Agent):
+    def __init__(self, batch_size:int=32, load_series:str=None, save_series:str=None):
+        super().__init__(is_pacman = False, batch_size=batch_size, load_series=load_series, save_series=save_series)
 
     def predict(self, state):
         pos = state.gamestate_to_statedict()["ghosts_coord"]

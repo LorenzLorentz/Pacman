@@ -94,5 +94,5 @@ def state2tensor(state) -> torch.tensor:
 def state2pacmanout(prob:torch.tensor, reward:float) -> torch.tensor:
     return torch.cat((prob, torch.tensor([reward], device=device, dtype=torch.float32)), dim=0).to(device)
 
-def state2ghostout(prob:torch.tensor, EATEN:bool) -> torch.tensor:
-    return torch.cat((prob, torch.tensor([EATEN], device=device, dtype=torch.float32)), dim=0).to(device)
+def state2ghostout(prob:torch.tensor, EATEN:bool, GONE:bool) -> torch.tensor:
+    return torch.cat((prob, torch.tensor([int(EATEN)-2*int(GONE)], device=device, dtype=torch.float32)), dim=0).to(device)

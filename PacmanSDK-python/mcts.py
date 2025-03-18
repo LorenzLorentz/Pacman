@@ -10,25 +10,31 @@ from utils.valid_action import *
 from utils.ghostact_int2list import *
 from utils.PacmanEnvDecorator import *
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class MCTSNode:
-    def __init__(self, env:PacmanEnvDecorator, done:bool=False, parent=None):
+    def __init__(self, env:PacmanEnvDecorator, agent:Agent, otheragent:Agent, done:bool, parent=None):
         self.env=copy.deepcopy(env)
-        self.state=env.game_state()
+        self.state=self.env.game_state()
         self.state_dict=self.state.gamestate_to_statedict()
-        self.done=done
+
+        self.agent = agent
+        self.otheragent = otheragent
+        self.isPacman = agent.is_pacman()
+        self.action_dim = 5 if self.isPacman else 125
 
         self.parent=parent
-        self.children_matrix = [[None] * 125 for _ in range(5)]
+        self.children = [None] * self.action_dim
+        self.done = done
+        self.expanded = False
 
         self.N=0
-        self.P_pacman=np.zeros(5, dtype=np.float32)
-        self.P_ghost=np.zeros(125, dtype=np.float32)
-        self.W_pacman=0.0
-        self.W_ghost=0.0
-        self.Q_pacman=0.0
-        self.Q_ghost=0.0
-        
-        self.expanded=False
+        self.P=np.zeros(self.action_dim, dtype=np.float32)
+        self.W=0.0
+        self.Q=0.0
+
+        # self.children_W = np.zeros()
+        # self.chidren_Q = np.zeros()
 
     def is_terminal(self) -> bool:
         return self.done
@@ -36,224 +42,153 @@ class MCTSNode:
     def is_expanded(self) -> bool:
         return self.expanded
     
-    def expand(self, pacman:PacmanAgent, ghost:GhostAgent) -> tuple[float, float]:
-        self.expanded=True
+    def is_pacman(self) -> bool:
+        return self.isPacman
 
-        with torch.no_grad():
-            action_probs_pacman, value_pacman = pacman.predict(self.state)
-            action_probs_ghost, value_ghost = ghost.predict(self.state)
-
-        self.P_pacman = action_probs_pacman.cpu().numpy()
-        self.P_ghost = action_probs_ghost.cpu().numpy()
-
-        pos_pacman = self.state.gamestate_to_statedict()["pacman_coord"]
-        legal_action_pacman = get_valid_moves_pacman(pos_pacman, self.state)
-        pos_ghost = self.state.gamestate_to_statedict()["ghosts_coord"]
-        legal_action_ghost = get_valid_moves_ghost(pos_ghost, self.state)
-
-        for action_pacman in legal_action_pacman:
-            for action_ghost in legal_action_ghost:
-                self.env.restore(self.state)
-                _, _, _, done, _ = self.env.step(action_pacman, ghostact_int2list(action_ghost), self.state)
-                self.children_matrix[action_pacman][action_ghost] = MCTSNode(self.env, done, parent=self)
-
-        return value_pacman.item(), value_ghost.item()
-
-    def select(self, c_puct:float):
-        indices=[]
-        q_pacman_list=[]
-        q_ghost_list=[]
-        n_list=[]
-        p_pacman_list=[]
-        p_ghost_list=[]
-
-        pos_pacman = self.state.gamestate_to_statedict()["pacman_coord"]
-        legal_action_pacman = get_valid_moves_pacman(pos_pacman, self.state)
-        pos_ghost = self.state.gamestate_to_statedict()["ghosts_coord"]
-        legal_action_ghost = get_valid_moves_ghost(pos_ghost, self.state)
-
-        for action_pacman in legal_action_pacman:
-            for action_ghost in legal_action_ghost:
-                child = self.children_matrix[action_pacman][action_ghost]
-                if child is not None:
-                    indices.append((action_pacman, action_ghost))
-                    q_pacman_list.append(child.Q_pacman)
-                    q_ghost_list.append(child.Q_ghost)
-                    n_list.append(child.N)
-                    p_pacman_list.append(self.P_pacman[action_pacman])
-                    p_ghost_list.append(self.P_ghost[action_ghost])
-
-        indices = np.array(indices)
-        q_pacman_arr = np.array(q_pacman_list)
-        q_ghost_arr = np.array(q_ghost_list)
-        n_arr = np.array(n_list)
-        p_pacman_arr = np.array(p_pacman_list)
-        p_ghost_arr = np.array(p_ghost_list)
-
-        total_visits = self.N if self.N > 0 else 1
-        bonus = c_puct * np.sqrt(total_visits) / (1 + n_arr)
-        scores = q_pacman_arr + bonus * p_pacman_arr + q_ghost_arr + bonus * p_ghost_arr
+    def expand(self) -> float:
+        if self.is_terminal():
+            return
         
-        best_idx = np.argmax(scores)
-        best_action_pacman, best_action_ghost = indices[best_idx]
-        best_child = self.children_matrix[best_action_pacman][best_action_ghost]
+        with torch.no_grad():
+            state_tensor = state2tensor(self.state)
+            selected_action, action_probs, value = self.agent.predict(state_tensor)
 
-        return best_action_pacman, best_action_ghost, best_child
-    
-    def update(self, value:float):
-        value_pacman, value_ghost = value
+        self.P = action_probs.cpu().numpy()
+        self.expanded = True
 
+        if self.is_pacman():
+            pos = self.state.gamestate_to_statedict()["pacman_coord"]
+            legal_actions = get_valid_moves_pacman(pos, self.state)
+        else:
+            pos = self.state.gamestate_to_statedict()["ghosts_coord"]
+            legal_actions = get_valid_moves_ghost(pos, self.state)
+
+        for action in legal_actions:
+            env_copy=copy.deepcopy(self.env)
+            if self.isPacman:
+                ghost_action = self._select_opponent_action()
+                _, _, _, done, _ = env_copy.step(action, ghost_action, self.state)
+            else:
+                pacman_action = self._select_opponent_action()
+                _, _, _, done, _ = env_copy.step(pacman_action, action, self.state)
+            self.children[action] = MCTSNode(env_copy, self.agent, self.otheragent, done, parent=self)
+
+        return value.item()
+
+    def select(self, c_puct:float=2.5):
+        if not self.is_expanded():
+            raise ValueError("Not expanded")
+        
+        if self.is_pacman():
+            pos = self.state.gamestate_to_statedict()["pacman_coord"]
+            legal_actions = get_valid_moves_pacman(pos, self.state)
+        else:
+            pos = self.state.gamestate_to_statedict()["ghosts_coord"]
+            legal_actions = get_valid_moves_ghost(pos, self.state)
+        
+        uct_scores = [
+            self.children[action].Q + c_puct * self.P[action] * np.sqrt(self.N) / (1 + self.children[action].N)
+            for action in legal_actions
+        ] 
+       
+        # TODO 能否修改使之并行化？应该需要把Q等东西储存在parent中
+
+        best_action = legal_actions[np.argmax(uct_scores)]
+        
+        return best_action, self.children[best_action]
+
+    def update(self, value:float) -> None:
         self.N += 1
-        self.W_pacman += value_pacman
-        self.W_ghost += value_ghost
+        self.W += value
+        self.Q = self.W / self.N
 
-        self.Q_pacman = self.W_pacman / self.N
-        self.Q_ghost = self.W_ghost / self.N
+    def _select_opponent_action(self) -> int:
+        # idea 1: 随机选择
+        if self.is_pacman():
+            pos = self.state.gamestate_to_statedict()["ghosts_coord"]
+            legal_actions = get_valid_moves_ghost(pos, self.state)
+        else:
+            pos = self.state.gamestate_to_statedict()["pacman_coord"]
+            legal_actions = get_valid_moves_pacman(pos, self.state)
+        return np.random.choice(legal_actions)
+
+        # idea 2: 使用对手的mcts或者纯神经网络
+        selected_action, _, _ = self.otheragent(self.state)
+        return selected_action
 
 class MCTS:
-    def __init__(self, env:PacmanEnvDecorator, pacman:PacmanAgent, ghost:GhostAgent, c_puct:float, temperature:float=1, num_simulations:int=120):
-        self.env=env
-        self.state=env.game_state()
-
-        self.pacman=pacman
-        self.ghost=ghost
+    def __init__(self, env:PacmanEnv, agent:Agent, otheragent:Agent, c_puct:float, n_simulations:int, n_search:int, temp:float, det:bool=True):
+        self.env=PacmanEnvDecorator(copy.deepcopy(env))
+        self.agent=agent
+        self.otheragent=otheragent
         
+        self.det=det
+
         self.c_puct=c_puct
-        self.temp_inverse=1/temperature
-        self.num_simulations=num_simulations
+        self.n_simulations=n_simulations
+        self.n_search=n_search
+        self.inv_temp=temp
 
-    def search(self, node:MCTSNode):
+    def search(self, node:MCTSNode) -> float:
         if node.is_terminal():
-            return node.state_dict["score"]
-        
+            return self.get_terminal_value(node)
+
         if not node.is_expanded():
-            value=node.expand(self.pacman, self.ghost)
+            value = node.expand()
             node.update(value)
             return value
-        
-        _, _, child=node.select(self.c_puct)
 
-        value=self.search(child)
+        action, child = node.select(self.c_puct)
+        value = self.search(child)
         node.update(value)
-
         return value
+
+    def run(self) -> tuple[int, torch.tensor, float]:
+        self.root=MCTSNode(self.env, self.agent, self.otheragent, done=False)
+        for _ in self.n_search:
+            value = self.search(self.root)
+        selected_action, prob = self.decide()
+        return selected_action, prob, value
+
+    def decide(self) -> tuple[int, torch.tensor]:
+        visits=torch.zeros(self.root.action_dim, device=device, dtype=torch.float32)
+        sum_visits=0.0
+        
+        if self.root.is_pacman():
+            pos = self.state.gamestate_to_statedict()["pacman_coord"]
+            legal_actions = get_valid_moves_pacman(pos, self.state)
+        else:
+            pos = self.state.gamestate_to_statedict()["ghosts_coord"]
+            legal_actions = get_valid_moves_ghost(pos, self.state)
+        
+        for action in legal_actions:
+            node = self.root.children[action]
+            if node:
+                visits[action] += node.N**self.inv_temp
+                sum_visits += node.N**self.inv_temp
+        
+        prob = visits/sum_visits
+
+        if self.det:
+            selected_action = torch.argmax(prob)
+        else:
+            selected_action = torch.multinomial(prob, 1)
+
+        return (selected_action, prob)
+
+    def get_terminal_value(self) -> float:
+        raise NotImplementedError
+
+class MCTS_pacman(MCTS):
+    def __init__(self, env:PacmanEnv, pacman:PacmanAgent, ghost:GhostAgent, c_puct:float, n_simulations:int, n_search:int, det:bool=True):
+        super().__init__(env=env, agent=pacman, otheragent=ghost, c_puct=c_puct, n_simulations=n_simulations, n_search=n_search, det=det)
+
+    def get_terminal_value(self) -> float:
+        return float(self.env.game_state().pacman_score)
+
+class MCTS_ghost(MCTS):
+    def __init__(self, env:PacmanEnv, ghost:GhostAgent, pacman:PacmanAgent, c_puct:float, n_simulations:int, n_search:int, det:bool=True):
+        super().__init__(env=env, agent=ghost, otheragent=pacman, c_puct=c_puct, n_simulations=n_simulations, n_search=n_search, det=det)
     
-    def run_batch(self, batch_size:int=8):
-        self.root = MCTSNode(self.env)
-        for _ in range(self.num_simulations // batch_size):
-            leaf_nodes = []
-            paths = []
-            
-            for _ in range(batch_size):
-                node = self.root
-                path = []
-                while not node.is_terminal() and node.is_expanded():
-                    action_pacman, action_ghost, child = node.select(self.c_puct)
-                    path.append((node, action_pacman, action_ghost))
-                    node = child
-                leaf_nodes.append(node)
-                paths.append(path)
-            
-            states = [node.state for node in leaf_nodes]
-            state_tensors = [state2tensor(state) for state in states]
-            state_batch = torch.cat(state_tensors)
-            
-            with torch.no_grad():
-                action_probs_pacman, values_pacman = self.pacman.ValueNet(state_batch)
-                action_probs_ghost, values_ghost = self.ghost.ValueNet(state_batch)
-            
-            for i, node in enumerate(leaf_nodes):
-                if node.is_terminal():
-                    value = node.state_dict["score"]
-                else:
-                    self.P_pacman = action_probs_pacman[i].cpu().numpy()
-                    self.P_ghost = action_probs_ghost[i].cpu().numpy()
-                    value =  (values_pacman[i].item(), values_ghost[i].item())
-
-                    pos_pacman = node.state.gamestate_to_statedict()["pacman_coord"]
-                    legal_action_pacman = get_valid_moves_pacman(pos_pacman, node.state)
-                    pos_ghost = node.state.gamestate_to_statedict()["ghosts_coord"]
-                    legal_action_ghost = get_valid_moves_ghost(pos_ghost, node.state)
-
-                    for action_pacman in legal_action_pacman:
-                        for action_ghost in legal_action_ghost:
-                            node.env.restore(self.state)
-                            _, _, _, done, _ = node.env.step(action_pacman, ghostact_int2list(action_ghost), node.state)
-                            node.children_matrix[action_pacman][action_ghost] = MCTSNode(node.env, done, parent=self)
-                
-                for parent_node, _, _ in paths[i][::-1]:
-                    parent_node.update(value)
-                if not node.is_terminal():
-                    node.update(value)
-        return self.decide()
-
-    def run(self):
-        self.root = MCTSNode(self.env)
-        for _ in range(self.num_simulations):
-            self.search(self.root)
-        return self.decide()
-
-    def play_game_pacman(self):
-        self.root = MCTSNode(self.env)
-        for _ in range(self.num_simulations):
-            self.search(self.root)
-        visits_pacman = torch.zeros(5, dtype=torch.float32, device=device)
-        visits_ghost = torch.zeros(125, dtype=torch.float32, device=device)
-        sum_visits = 0.0
-        
-        pos_pacman = self.state.gamestate_to_statedict()["pacman_coord"]
-        legal_action_pacman = get_valid_moves_pacman(pos_pacman, self.state)
-        pos_ghost = self.state.gamestate_to_statedict()["ghosts_coord"]
-        legal_action_ghost = get_valid_moves_ghost(pos_ghost, self.state)
-
-        for action_pacman in legal_action_pacman:
-            for action_ghost in legal_action_ghost:
-                node = self.root.children_matrix[action_pacman][action_ghost]
-                if node is not None:
-                    visits_pacman[action_pacman] += node.N
-                    visits_ghost[action_ghost] += node.N
-                    sum_visits += node.N ** self.temp_inverse
-
-        sum_visits = sum_visits if sum_visits != 0.0 else 1e-8
-
-        prob_pacman = (visits_pacman ** self.temp_inverse) / sum_visits
-        selected_action_pacman = torch.multinomial(prob_pacman, 1) #torch.random.choice(torch.arange(5), p=prob_pacman)
-        return selected_action_pacman.cpu().numpy().tolist() if self.root.P_pacman[selected_action_pacman.item()] != 0 else [0]
-
-    def decide(self):
-        visits_pacman = torch.zeros(5, dtype=torch.float32, device=device)
-        visits_ghost = torch.zeros(125, dtype=torch.float32, device=device)
-        sum_visits = 0.0
-        
-        pos_pacman = self.state.gamestate_to_statedict()["pacman_coord"]
-        legal_action_pacman = get_valid_moves_pacman(pos_pacman, self.state)
-        pos_ghost = self.state.gamestate_to_statedict()["ghosts_coord"]
-        legal_action_ghost = get_valid_moves_ghost(pos_ghost, self.state)
-
-        for action_pacman in legal_action_pacman:
-            for action_ghost in legal_action_ghost:
-                node = self.root.children_matrix[action_pacman][action_ghost]
-                if node is not None:
-                    visits_pacman[action_pacman] += node.N
-                    visits_ghost[action_ghost] += node.N
-                    sum_visits += node.N ** self.temp_inverse
-
-        sum_visits = sum_visits if sum_visits != 0.0 else 1e-8
-
-        prob_pacman = (visits_pacman ** self.temp_inverse) / sum_visits
-        prob_ghost = (visits_ghost ** self.temp_inverse) / sum_visits
-
-        selected_action_pacman = torch.multinomial(prob_pacman, 1) #torch.random.choice(torch.arange(5), p=prob_pacman)
-        selected_action_ghost = torch.multinomial(prob_ghost, 1) # torch.random.choice(torch.arange(125), p=prob_ghost)
-
-        # print("!!!", "0", sum_visits)
-        # print("!!!!", "1", prob_pacman.shape, prob_pacman, selected_action_pacman)
-        # print("!!!!", "2", prob_ghost.shape, prob_ghost, selected_action_ghost)
-
-        selected_action_pacman = selected_action_pacman.item() if self.root.P_pacman[selected_action_pacman.item()] != 0 else 0
-        selected_action_ghost = selected_action_ghost.item() if self.root.P_ghost[selected_action_ghost.item()] != 0 else 0
-
-        decision_pacman = (selected_action_pacman, prob_pacman, torch.tensor(self.root.Q_pacman, dtype=torch.float32, device=device))
-        decision_ghost = (selected_action_ghost, prob_ghost, torch.tensor(self.root.Q_ghost, dtype=torch.float32, device=device))
-
-        return decision_pacman, decision_ghost
+    def get_terminal_value(self) -> float:
+        return float(self.env.is_eaten()) - 2*int(self.env.is_gone())
