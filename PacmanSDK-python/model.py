@@ -41,10 +41,10 @@ class ValueNet(nn.Module):
 
     def __init__(
         self,
-        in_channels=7,
+        in_channels=14,
         board_size=42,
         num_filters=128,
-        num_res_blocks=14,
+        num_res_blocks=6,
         policy_out_dim=5,
         if_Pacman=True
     ):
@@ -54,6 +54,8 @@ class ValueNet(nn.Module):
             policy_out_dim=5
         else:
             policy_out_dim=5*5*5
+
+        self.if_Pacman = if_Pacman
 
         self.conv = nn.Conv2d(in_channels, num_filters, kernel_size=3, stride=1, padding=1)
         self.bn = nn.BatchNorm2d(num_filters)
@@ -81,6 +83,8 @@ class ValueNet(nn.Module):
             elif isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
                 nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
 
     def forward(self, x):
         x = F.relu(self.bn(self.conv(x)))
@@ -97,7 +101,7 @@ class ValueNet(nn.Module):
         v = F.relu(self.value_bn(self.value_conv(x)))
         v = v.view(v.size(0), -1)
         v = F.relu(self.value_fc1(v))
-        v = torch.tanh(self.value_fc2(v))
+        v = self.value_fc2(v) if self.if_Pacman else torch.tanh(self.value_fc2(v))
 
         return p, v
 

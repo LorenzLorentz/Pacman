@@ -105,8 +105,8 @@ def data_synthesize(data_json, eps=5e-2):
         pacman_reward = current_score[0]
         ghost_reward = current_score[1]
 
-        pacman_prob=torch.zeros([5], device=device, dtype=torch.float32)
-        ghost_prob=torch.zeros([125], device=device, dtype=torch.float32)
+        pacman_prob=torch.zeros([5], device=device, dtype=torch.float16) # 
+        ghost_prob=torch.zeros([125], device=device, dtype=torch.float16) # 
 
         pacman_prob[:]=eps/5
         pacman_prob[pacman_action]+=1-eps
@@ -118,8 +118,8 @@ def data_synthesize(data_json, eps=5e-2):
             ghost_prob[ghost_action[0] + ghost_action[1]*5 + _*25] += (1-eps)/2/15
         ghost_prob[ghost_action[0] + ghost_action[1]*5 + ghost_action[2]*25] += (1-eps)/2
 
-        point = (gamestate, pacman_prob, torch.tensor(pacman_reward, device=device, dtype=torch.float32), 
-                 ghost_prob, torch.tensor(ghost_reward, device=device, dtype=torch.float32), EATEN, GONE)
+        point = (gamestate, pacman_prob, torch.tensor(pacman_reward, device=device, dtype=torch.float16), 
+                 ghost_prob, torch.tensor(ghost_reward, device=device, dtype=torch.float16), EATEN, GONE)
         traj.append(point)
 
         last_pacman_coord = current_pacman_coord
@@ -132,7 +132,23 @@ def data_synthesize(data_json, eps=5e-2):
     return trajs
 
 def create_batches(dataset, batch_size=512):
-    batches=[dataset[i:i + batch_size] for i in range(0, len(dataset), batch_size)]
+    batches = []
+    for i in range(0, len(dataset), batch_size):
+        batch = dataset[i:i + batch_size]
+        
+        inputs = [item[0] for item in batch]
+        output_policies = [item[1][:-1] for item in batch]
+        output_values = [item[1][-1] for item in batch]
+        
+        batch_inputs = torch.cat(inputs)
+        batch_policies = torch.stack(output_policies)
+        batch_values = torch.stack(output_values)
+        
+        print("???", batch[0][0].shape, batch[0][1][:-1].shape, batch[0][1][-1].shape)
+        print("!!!", batch_inputs.shape, batch_policies.shape, batch_values.shape)
+
+        batches.append((batch_inputs, batch_policies, batch_values))
+    
     return batches
 
 def dataset_synthesize_from_traj(trajs:list, batch_size=128, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1):
@@ -182,7 +198,7 @@ def dataset_synthesize_from_traj(trajs:list, batch_size=128, train_ratio=0.8, va
     torch.save(val_batches_ghost, 'selfplay/val_dataset_ghost.pt')
     torch.save(test_batches_ghost, 'selfplay/test_dataset_ghost.pt')
 
-def dataset_synthesize(json_dir="matchdata_json", batch_size=512, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1):
+def dataset_synthesize(json_dir:str="matchdata_json", batch_size:int=512, train_ratio:float=0.8, val_ratio:float=0.1, test_ratio:float=0.1):
     dataset_pacman=[]
     dataset_ghost=[]
 
@@ -198,15 +214,15 @@ def dataset_synthesize(json_dir="matchdata_json", batch_size=512, train_ratio=0.
                     input_tensor = state2tensor(gamestate)
                     output_tensor_pacman = state2pacmanout(pacman_prob, pacman_reward)
                     output_tensor_ghost = state2ghostout(ghost_prob, EATEN, GONE)
-                    dataset_pacman.append((input_tensor, output_tensor_pacman))
-                    dataset_ghost.append((input_tensor, output_tensor_ghost))
+                    dataset_pacman.append((input_tensor.squeeze(), output_tensor_pacman[:-1], output_tensor_pacman[-1]))
+                    dataset_ghost.append((input_tensor.squeeze(), output_tensor_ghost[:-1], output_tensor_ghost[-1]))
 
     random.shuffle(dataset_pacman)
     random.shuffle(dataset_ghost)
 
     total = len(dataset_pacman)
-    train_end = int(total*train_ratio)
-    val_end = train_end + int(total*val_ratio)
+    train_end = int(total*train_ratio)//batch_size*batch_size
+    val_end = train_end + int(total*val_ratio)//batch_size*batch_size
     
     train_data_pacman = dataset_pacman[:train_end]
     val_data_pacman = dataset_pacman[train_end:val_end]
@@ -219,21 +235,13 @@ def dataset_synthesize(json_dir="matchdata_json", batch_size=512, train_ratio=0.
     print(f"Total datapoints: {total}")
     print(f"Train: {len(train_data_pacman)}, Validation: {len(val_data_pacman)}, Test: {len(test_data_pacman)}")
 
-    train_batches_pacman = create_batches(train_data_pacman, batch_size)
-    val_batches_pacman = create_batches(val_data_pacman, batch_size)
-    test_batches_pacman = create_batches(test_data_pacman, batch_size)
+    torch.save(train_data_pacman, 'data/train_dataset_pacman.pt')
+    torch.save(val_data_pacman, 'data/val_dataset_pacman.pt')
+    torch.save(test_data_pacman, 'data/test_dataset_pacman.pt')
 
-    torch.save(train_batches_pacman, 'data/train_dataset_pacman.pt')
-    torch.save(val_batches_pacman, 'data/val_dataset_pacman.pt')
-    torch.save(test_batches_pacman, 'data/test_dataset_pacman.pt')
-
-    train_batches_ghost = create_batches(train_data_ghost, batch_size)
-    val_batches_ghost = create_batches(val_data_ghost, batch_size)
-    test_batches_ghost = create_batches(test_data_ghost, batch_size)
-
-    torch.save(train_batches_ghost, 'data/train_dataset_ghost.pt')
-    torch.save(val_batches_ghost, 'data/val_dataset_ghost.pt')
-    torch.save(test_batches_ghost, 'data/test_dataset_ghost.pt')
+    torch.save(train_data_ghost, 'data/train_dataset_ghost.pt')
+    torch.save(val_data_ghost, 'data/val_dataset_ghost.pt')
+    torch.save(test_data_ghost, 'data/test_dataset_ghost.pt')
 
 if __name__=="__main__":
     dataset_synthesize()

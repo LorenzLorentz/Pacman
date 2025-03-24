@@ -53,19 +53,25 @@ def state_dict_to_tensor(state_dict):
         0
     )
 
+def one_hot(board:np.ndarray, num_classes:int) -> np.ndarray:
+    one_hot = np.eye(num_classes)[board]
+    one_hot = one_hot.transpose(2, 0, 1)
+    return one_hot
+
 def state2tensor(state) -> torch.tensor:
     state_dict=state.gamestate_to_statedict()
     
     board=np.array(state_dict["board"])
     padding_num = 42 - state_dict["board_size"]
     board = np.pad(board, pad_width=(padding_num//2, padding_num-padding_num//2), mode="constant", constant_values=0)
+    board_onehot = one_hot(board, num_classes=10)
 
-    board_coin = board
-    board_coin[board_coin>=4]=0
+    # board_coin = board
+    # board_coin[board_coin>=4]=0
 
-    board_special = board
-    board_special[board_special<=3]=0
-    board_special[board_special==9]=0
+    # board_special = board
+    # board_special[board_special<=3]=0
+    # board_special[board_special==9]=0
 
     pacman_pos = np.zeros((42, 42))
     pacman = state_dict["pacman_coord"]
@@ -85,14 +91,20 @@ def state2tensor(state) -> torch.tensor:
     extra=np.insert(extra, 6, state_dict["beannumber"])
     extra_expanded=np.resize(extra, (42, 42))
 
-    state_arrays = [board, board_coin, board_special, pacman_pos, ghost_pos, portal_pos, extra_expanded]
-    state_stacked = np.stack(state_arrays, axis=0)
-    state_tensor = torch.tensor(state_stacked, dtype=torch.float32, device=device).unsqueeze(0)
+    # state_arrays = [board, board_coin, board_special, pacman_pos, ghost_pos, portal_pos, extra_expanded]
+    # state_stacked = np.stack(state_arrays, axis=0)
+    state_arrays = [board_onehot,
+                    np.expand_dims(pacman_pos, axis=0),
+                    np.expand_dims(ghost_pos, axis=0),
+                    np.expand_dims(portal_pos, axis=0),
+                    np.expand_dims(extra_expanded, axis=0)]
+    state_stacked = np.concatenate(state_arrays, axis=0)
+    state_tensor = torch.tensor(state_stacked, dtype=torch.float16, device=device).unsqueeze(0)
 
     return state_tensor
 
 def state2pacmanout(prob:torch.tensor, reward:float) -> torch.tensor:
-    return torch.cat((prob, torch.tensor([reward], device=device, dtype=torch.float32)), dim=0).to(device)
+    return torch.cat((prob, torch.tensor([reward], device=device, dtype=torch.float16)), dim=0).to(device)
 
 def state2ghostout(prob:torch.tensor, EATEN:bool, GONE:bool) -> torch.tensor:
-    return torch.cat((prob, torch.tensor([int(EATEN)-2*int(GONE)], device=device, dtype=torch.float32)), dim=0).to(device)
+    return torch.cat((prob, torch.tensor([int(EATEN)-2*int(GONE)], device=device, dtype=torch.float16)), dim=0).to(device)
