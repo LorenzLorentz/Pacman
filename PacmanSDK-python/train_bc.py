@@ -3,13 +3,19 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import torch.utils.data.dataloader
 from torch.utils.tensorboard import SummaryWriter
+import datetime
 
+from utils.seed import *
+from utils.logger import *
 from utils.ghostact_int2list import *
 from core.gamedata import *
 from model import *
 from data import *
 
+logger = None
+writer = None
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 class Dataset(Dataset):
     def __init__(self, data_path):
         self.data = torch.load(data_path, weights_only=True)
@@ -31,8 +37,6 @@ class BCTrainer:
 
         self.best_acc =0.0
 
-        self.writer = SummaryWriter(log_dir="/root/tf-logs")
-
     def train(self):
         self.agent.ValueNet.train()
         for epoch in range(self.num_epochs):
@@ -52,7 +56,8 @@ class BCTrainer:
                     v = v.squeeze(1)
                     v = v/200
                     target_values = target_values/200
-                    loss_policy = F.kl_div(torch.log(p), target_policies, reduction="batchmean")
+                    loss_policy = F.l1_loss(p, target_policies, reduction="batchmean")
+                    # loss_policy = F.kl_div(torch.log(p), target_policies, reduction="batchmean")
                     loss_value = F.mse_loss(v, target_values)
                     loss = loss_policy + loss_value
                 
@@ -66,9 +71,9 @@ class BCTrainer:
                 total_value_loss += loss_value.item()
                 num_batches += 1
 
-            self.writer.add_scalar("TrainLoss/Total", total_loss/num_batches)
-            self.writer.add_scalar("TrainLoss/Policy", total_policy_loss/num_batches)
-            self.writer.add_scalar("TrainLoss/Value", total_value_loss/num_batches)
+            # self.writer.add_scalar("TrainLoss/Total", total_loss/num_batches)
+            # self.writer.add_scalar("TrainLoss/Policy", total_policy_loss/num_batches)
+            # self.writer.add_scalar("TrainLoss/Value", total_value_loss/num_batches)
 
             print(f"Epoch {epoch+1}/{self.num_epochs}, Loss: {total_loss/num_batches:.4f}, "
                   f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
@@ -96,7 +101,8 @@ class BCTrainer:
                     v = v.squeeze(1)
                     v = v/200
                     target_values = target_values/200
-                    loss_policy = F.kl_div(torch.log(p), target_policies, reduction="batchmean")
+                    loss_policy = F.l1_loss(p, target_policies, reduction="batchmean")
+                    # loss_policy = F.kl_div(torch.log(p), target_policies, reduction="batchmean")
                     loss_value = F.mse_loss(v, target_values)
                     loss = loss_policy + loss_value
 
@@ -105,9 +111,9 @@ class BCTrainer:
                 total_value_loss += loss_value.item()
                 num_batches += 1
 
-        self.writer.add_scalar("ValLoss/Total", total_loss/num_batches)
-        self.writer.add_scalar("ValLoss/Policy", total_policy_loss/num_batches)
-        self.writer.add_scalar("ValLoss/Value", total_value_loss/num_batches)
+        # self.writer.add_scalar("ValLoss/Total", total_loss/num_batches)
+        # self.writer.add_scalar("ValLoss/Policy", total_policy_loss/num_batches)
+        # self.writer.add_scalar("ValLoss/Value", total_value_loss/num_batches)
 
         print(f"Validation Epoch {epoch+1}: Loss: {total_loss/num_batches:.4f}, "
                 f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
@@ -162,8 +168,8 @@ class BCTrainer:
         p_acc = 1-total_p_error/num_points
         v_acc = 1-total_v_error/num_points
 
-        self.writer.add_scalar("TestAcc/p_acc", p_acc)
-        self.writer.add_scalar("TestAcc/v_acc", v_acc)
+        # self.writer.add_scalar("TestAcc/p_acc", p_acc)
+        # self.writer.add_scalar("TestAcc/v_acc", v_acc)
 
         if 0.7*(p_acc-0.2) + 0.3*v_acc > self.best_acc:
             self.agent.save_model()
@@ -172,6 +178,11 @@ class BCTrainer:
         print(f"Test: Prob acc: {1-total_p_error/num_points}, Value acc: {1-total_v_error/num_points}")
 
 if __name__ == '__main__':
+    SEED = 3407
+    set_seed(SEED)
+    logger = get_logger(name="PacmanLog", seed=SEED, log_file="log/train_bc_{}.log".format(datetime.datetime.now().strftime("%m%d%H%M")))
+    # writer = SummaryWriter(log_dir="/root/tf-logs")
+
     batch_size = 512
     num_epochs = 200
 

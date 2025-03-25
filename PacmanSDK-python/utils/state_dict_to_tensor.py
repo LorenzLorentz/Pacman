@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import copy
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -58,47 +59,54 @@ def one_hot(board:np.ndarray, num_classes:int) -> np.ndarray:
     one_hot = one_hot.transpose(2, 0, 1)
     return one_hot
 
+def extract_nearby(board, center, patch_size=7):
+        half = patch_size // 2
+        board_padded = np.pad(board, (half, half, half, half), mode='constant', value=0)
+        board_padded = board_padded.squeeze(0).squeeze(0)
+        c_row, c_col = center
+        c_row = int(c_row.item()) if isinstance(c_row, torch.Tensor) else int(c_row)
+        c_col = int(c_col.item()) if isinstance(c_col, torch.Tensor) else int(c_col)
+        c_row += half
+        c_col += half
+        patch = board_padded[c_row-half:c_row+half+1, c_col-half:c_col+half+1]
+        return patch
+
 def state2tensor(state) -> torch.tensor:
     state_dict=state.gamestate_to_statedict()
     
     board=np.array(state_dict["board"])
     padding_num = 42 - state_dict["board_size"]
     board = np.pad(board, pad_width=(padding_num//2, padding_num-padding_num//2), mode="constant", constant_values=0)
-    board_onehot = one_hot(board, num_classes=10)
 
-    # board_coin = board
-    # board_coin[board_coin>=4]=0
+    board_pos = np.zeros_like(board)
 
-    # board_special = board
-    # board_special[board_special<=3]=0
-    # board_special[board_special==9]=0
-
-    pacman_pos = np.zeros((42, 42))
     pacman = state_dict["pacman_coord"]
-    pacman_pos[pacman[0] + padding_num//2][pacman[1] + padding_num//2] = 1
+    pacman_nearby = extract_nearby(board, pacman, patch_size=7)
 
-    ghost_pos = np.zeros((42, 42))
     for ghost in state_dict["ghosts_coord"]:
-        ghost_pos[ghost[0] + padding_num][ghost[1] + padding_num] = 1
+        board_pos[ghost[0] + padding_num][ghost[1] + padding_num] += 2
 
-    portal_pos = np.zeros((42, 42))
     portal = state_dict["portal_coord"]
     if portal[0] != -1 and portal[1] != -1 and state_dict["portal_available"]:
-        portal_pos[portal[0] + padding_num][portal[1] + padding_num] = 1
+        board_pos[portal[0] + padding_num][portal[1] + padding_num] = 3
+
+    # board_avail = copy.deepcopy(board)
+    # board_avail[board_avail>=1] = 1
+
+    # board_coin = copy.deepcopy(board)
+    # board_coin[board_coin>=4]=0
+
+    # board_special = copy.deepcopy(board)
+    # board_special[board_special<=3]=0
+    # board_special[board_special==9]=0
 
     extra=state_dict["pacman_skill_status"]
     extra=np.insert(extra, 5, state_dict["round"])
     extra=np.insert(extra, 6, state_dict["beannumber"])
     extra_expanded=np.resize(extra, (42, 42))
 
-    # state_arrays = [board, board_coin, board_special, pacman_pos, ghost_pos, portal_pos, extra_expanded]
-    # state_stacked = np.stack(state_arrays, axis=0)
-    state_arrays = [board_onehot,
-                    np.expand_dims(pacman_pos, axis=0),
-                    np.expand_dims(ghost_pos, axis=0),
-                    np.expand_dims(portal_pos, axis=0),
-                    np.expand_dims(extra_expanded, axis=0)]
-    state_stacked = np.concatenate(state_arrays, axis=0)
+    state_arrays = [board, board_pos, extra_expanded]
+    state_stacked = np.stack(state_arrays, axis=0)
     state_tensor = torch.tensor(state_stacked, dtype=torch.float16, device=device).unsqueeze(0)
 
     return state_tensor
@@ -108,3 +116,9 @@ def state2pacmanout(prob:torch.tensor, reward:float) -> torch.tensor:
 
 def state2ghostout(prob:torch.tensor, EATEN:bool, GONE:bool) -> torch.tensor:
     return torch.cat((prob, torch.tensor([int(EATEN)-2*int(GONE)], device=device, dtype=torch.float16)), dim=0).to(device)
+
+def state2pacman() -> torch.tensor:
+    pass
+
+def state2ghost() -> torch.tensor:
+    pass
