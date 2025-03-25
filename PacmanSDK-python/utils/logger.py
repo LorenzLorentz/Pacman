@@ -19,10 +19,10 @@ def get_logger(name: str = "default_logger",
     if logger.hasHandlers():
         logger.handlers.clear()
 
-    formatter = logging.Formatter(fmt, datefmt)
-
     if seed:
-        name += str(seed)
+        name += f"SEED={seed}"
+
+    formatter = logging.Formatter(fmt, datefmt)
 
     if console:
         console_handler = logging.StreamHandler(sys.stdout)
