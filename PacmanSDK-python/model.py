@@ -34,16 +34,19 @@ class ResidualBlock(nn.Module):
         return out
     
 class GlobalFeature(nn.Module):
-    def __init__(self, in_channels, num_filters=512, num_res_blocks=6):
+    def __init__(self, in_channels=14, out_channels=512, num_res_blocks=6):
         super(GlobalFeature, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, num_filters, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(num_filters)
-        self.conv2 = nn.Conv2d(num_filters, num_filters, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(num_filters)
-        self.encoder = nn.Sequential(*[ResidualBlock(num_filters) for _ in range(num_res_blocks)])
+        self.conv0 = nn.Conv2d(in_channels, out_channels//2, kernel_size=3, stride=2, padding=1)
+        self.bn0 = nn.BatchNorm2d(out_channels//2)
+        self.conv1 = nn.Conv2d(out_channels//2, out_channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.encoder = nn.Sequential(*[ResidualBlock(out_channels) for _ in range(num_res_blocks)])
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
     
     def forward(self, x):
+        x = F.relu(self.bn0(self.conv0(x)))
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = self.encoder(x)
@@ -52,12 +55,12 @@ class GlobalFeature(nn.Module):
         return x
 
 class LocalFeature(nn.Module):
-    def __init__(self, in_channels, num_filters=64, num_res_blocks=2, fc_out=128, local_size=5):
+    def __init__(self, in_channels, out_channels=64, num_res_blocks=2, fc_out=128, local_size=5):
         super(LocalFeature, self).__init__()
-        self.conv = nn.Conv2d(in_channels, num_filters, kernel_size=3, padding=1)
-        self.bn = nn.BatchNorm2d(num_filters)
-        self.res_blocks = nn.Sequential(*[ResidualBlock(num_filters) for _ in range(num_res_blocks)])
-        self.fc = nn.Linear(num_filters * local_size * local_size, fc_out)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.res_blocks = nn.Sequential(*[ResidualBlock(out_channels) for _ in range(num_res_blocks)])
+        self.fc = nn.Linear(out_channels * local_size * local_size, fc_out)
     
     def forward(self, x):
         x = F.relu(self.bn(self.conv(x)))
@@ -67,71 +70,68 @@ class LocalFeature(nn.Module):
         return x
 
 class ExtraFeature(nn.Module):
-    def __init__(self, in_features, out_features=64):
+    def __init__(self, in_channels, in_features, out_features=64):
         super(ExtraFeature, self).__init__()
-        self.fc = nn.Linear(in_features, out_features)
+        self.fc = nn.Linear(in_features*in_channels, out_features)
         self.bn = nn.BatchNorm1d(out_features)
         self.gelu = nn.GELU()
     
     def forward(self, x):
+        x = torch.flatten(x, start_dim=1)
         x = self.fc(x)
         x = self.bn(x)
         x = self.gelu(x)
         return x
     
 class InputParser(nn.Module):
-    def __init__(self, 
-                 board_size=42,
+    def __init__(self,
                  board_embedding_num=10,
                  board_embedding_dim=14,
-                 extra_out_dim=10):
+                 extrainfo_embedding=8):
         super(InputParser, self).__init__()
-        
-        self.board_size = board_size
 
         self.board_embedding = nn.Embedding(num_embeddings=board_embedding_num, embedding_dim=board_embedding_dim)
-        
-        self.extra_fc = nn.Sequential(
-            nn.Linear(42 * 42, extra_out_dim),
-            nn.BatchNorm1d(extra_out_dim),
-            nn.GELU()
-        )
+        self.extrainfo_embedding = nn.Embedding(num_embeddings=2*board_embedding_num, embedding_dim=extrainfo_embedding)
 
     def forward(self, x):
-        batch_size = x.size(0)
-
         board = x[:, 0, :, :].long()
         board_emb = self.board_embedding(board)
         global_input = board_emb.permute(0, 3, 1, 2)
 
-        extra = x[:, 2, :, :]
-        extra_flat = extra.view(batch_size, -1)
-        extra_input = self.extra_fc(extra_flat)
+        nearby = []
+        for i in range(5):
+            nearby.append(x[:, 1, 0:7, 7*i:7*(i+1)])
+        local_input = torch.stack(nearby, dim=1)
+
+        extra_info = x[:, 1, 0:1, 35:35+7].view(x.shape[0], -1).long()
+        extra_input = self.extrainfo_embedding(extra_info)
+        extra_input = extra_input.permute(0, 2, 1)
         
         return global_input, local_input, extra_input
 
 class ValueNet(nn.Module):
     def __init__(self, 
                  global_in_channels=14,
-                 local_in_channels=5, # pacman + ghost * 3 + portal
+                 local_in_channels=5,
+                 extra_in_channels=8,
                  extra_in_features=7,
                  board_size=42,
                  local_size=7,
                  global_filters=512,
                  local_filters=128,
-                 local_out_features=64,
+                 extra_out_features=64,
                  if_Pacman = True):
         
         super(ValueNet, self).__init__()
         self.if_Pacman = if_Pacman
         
-        self.parser = InputParser(board_size=board_size, board_embedding_dim=global_in_channels, extra_out_dim=extra_in_features)
+        self.parser = InputParser(board_embedding_dim=global_in_channels, extrainfo_embedding=extra_in_channels)
         
-        self.global_feature = GlobalFeature(global_in_channels, num_filters=global_filters, num_res_blocks=6)
-        self.local_feature = LocalFeature(local_in_channels, num_filters=local_filters, num_res_blocks=2, fc_out=128, local_size=local_size)
-        self.extra_feature = ExtraFeature(extra_in_features, out_features=local_out_features)
+        self.global_feature = GlobalFeature(in_channels=global_in_channels, out_channels=global_filters, num_res_blocks=6)
+        self.local_feature = LocalFeature(in_channels=local_in_channels, out_channels=local_filters, num_res_blocks=2, fc_out=128, local_size=local_size)
+        self.extra_feature = ExtraFeature(in_channels=extra_in_channels, in_features=extra_in_features, out_features=extra_out_features)
 
-        combined_dim = global_filters + local_filters + 64
+        combined_dim = global_filters + local_filters + extra_out_features
         self.fc_combined = nn.Linear(combined_dim, global_filters)
         self.bn_combined = nn.BatchNorm1d(global_filters)
         self.dropout = nn.Dropout(0.1)
@@ -166,8 +166,8 @@ class ValueNet(nn.Module):
         # local_input shape: [batch, local_in_channels, local_size, local_size]
         lf = self.local_feature(local_input)    # [batch, local_filters]
         
-        # extra_input shape: [batch, extra_in_features]
-        ef = self.extra_feature(extra_input)    # [batch, 64]
+        # extra_input shape: [batch, extra_in_channels, extra_in_features]
+        ef = self.extra_feature(extra_input)    # [batch, extra_features]
 
         combined = torch.cat([gf, lf, ef], dim=1)
         combined = self.gelu(self.bn_combined(self.fc_combined(combined)))

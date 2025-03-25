@@ -56,12 +56,13 @@ class BCTrainer:
                     v = v.squeeze(1)
                     v = v/200
                     target_values = target_values/200
-                    loss_policy = F.l1_loss(p, target_policies, reduction="batchmean")
+                    loss_policy = F.l1_loss(p, target_policies)
                     # loss_policy = F.kl_div(torch.log(p), target_policies, reduction="batchmean")
                     loss_value = F.mse_loss(v, target_values)
                     loss = loss_policy + loss_value
                 
                 self.agent.optimizer.zero_grad()
+                torch.autograd.set_detect_anomaly(True)
                 self.agent.scaler.scale(loss).backward()
                 self.agent.scaler.step(self.agent.optimizer)
                 self.agent.scaler.update()
@@ -75,8 +76,12 @@ class BCTrainer:
             # self.writer.add_scalar("TrainLoss/Policy", total_policy_loss/num_batches)
             # self.writer.add_scalar("TrainLoss/Value", total_value_loss/num_batches)
 
-            print(f"Epoch {epoch+1}/{self.num_epochs}, Loss: {total_loss/num_batches:.4f}, "
+            # print(f"Epoch {epoch+1}/{self.num_epochs}, Loss: {total_loss/num_batches:.4f}, "
+            #       f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
+            
+            logger.info(f"Epoch {epoch+1}/{self.num_epochs}, Loss: {total_loss/num_batches:.4f}, "
                   f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
+            
             self.validate(epoch)
 
             if (epoch+1)%self.num_test==0:
@@ -101,7 +106,7 @@ class BCTrainer:
                     v = v.squeeze(1)
                     v = v/200
                     target_values = target_values/200
-                    loss_policy = F.l1_loss(p, target_policies, reduction="batchmean")
+                    loss_policy = F.l1_loss(p, target_policies)
                     # loss_policy = F.kl_div(torch.log(p), target_policies, reduction="batchmean")
                     loss_value = F.mse_loss(v, target_values)
                     loss = loss_policy + loss_value
@@ -115,7 +120,10 @@ class BCTrainer:
         # self.writer.add_scalar("ValLoss/Policy", total_policy_loss/num_batches)
         # self.writer.add_scalar("ValLoss/Value", total_value_loss/num_batches)
 
-        print(f"Validation Epoch {epoch+1}: Loss: {total_loss/num_batches:.4f}, "
+        # print(f"Validation Epoch {epoch+1}: Loss: {total_loss/num_batches:.4f}, "
+        #         f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
+        
+        logger.info(f"Validation Epoch {epoch+1}: Loss: {total_loss/num_batches:.4f}, "
                 f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
     
     def test(self):
@@ -175,7 +183,9 @@ class BCTrainer:
             self.agent.save_model()
             self.best_acc = 0.7*(p_acc-0.2) + 0.3*v_acc
                 
-        print(f"Test: Prob acc: {1-total_p_error/num_points}, Value acc: {1-total_v_error/num_points}")
+        # print(f"Test: Prob acc: {1-total_p_error/num_points}, Value acc: {1-total_v_error/num_points}")
+
+        logger.info(f"Test: Prob acc: {1-total_p_error/num_points}, Value acc: {1-total_v_error/num_points}")
 
 if __name__ == '__main__':
     SEED = 3407
