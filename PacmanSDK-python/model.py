@@ -112,7 +112,7 @@ class ValueNet(nn.Module):
                  local_in_channels=5,
                  extra_in_channels=7,
                  extra_in_features=7,
-                 global_filters=256,
+                 global_filters=512,
                  local_filters=128,
                  extra_out_features=64,
                  if_Pacman = True):
@@ -122,8 +122,8 @@ class ValueNet(nn.Module):
         
         self.parser = InputParser(board_embedding_dim=global_in_channels, extrainfo_embedding=extra_in_channels)
         
-        self.global_feature = GlobalFeature(in_channels=global_in_channels, out_channels=global_filters, num_res_blocks=4)
-        self.local_feature = LocalFeature(in_channels=local_in_channels, out_channels=local_filters, num_res_blocks=2)
+        self.global_feature = GlobalFeature(in_channels=global_in_channels, out_channels=global_filters, num_res_blocks=6)
+        self.local_feature = LocalFeature(in_channels=local_in_channels, out_channels=local_filters, num_res_blocks=4)
         self.extra_feature = ExtraFeature(in_channels=extra_in_channels, in_features=extra_in_features, out_features=extra_out_features)
 
         combined_dim = global_filters + local_filters + extra_out_features
@@ -193,7 +193,7 @@ class ValueNet(nn.Module):
             raise ValueError("NaN or Inf detected in combined")
 
         # torch.clamp(self.policy_head(combined), min=-10, max=10)
-        policy = F.softmax(self.policy_head(combined), dim=1)
+        policy = self.policy_head(combined) # F.softmax(self.policy_head(combined), dim=1)
         
         value = self.value_head(combined)
         if not self.if_Pacman:
@@ -288,7 +288,7 @@ class Agent:
         self.save_series=save_series
         
         self.ValueNet=ValueNet(if_Pacman=is_pacman)
-        self.optimizer=optim.Adam(self.ValueNet.parameters())
+        self.optimizer=optim.Adam(self.ValueNet.parameters(), lr=1e-5)
         # self.optimizer=optim.SGD(self.ValueNet.parameters(), lr=5e-2)
         self.scaler = GradScaler('cuda')
         # self.scaler = GradScaler()

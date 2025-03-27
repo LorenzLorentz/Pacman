@@ -202,20 +202,26 @@ def dataset_synthesize(json_dir:str="matchdata_json", batch_size:int=512, train_
     dataset_pacman=[]
     dataset_ghost=[]
 
-    for filename in os.listdir(json_dir):
-        if filename.endswith('.jsonl'):
-            file_path = os.path.join(json_dir, filename)
-            with open(file_path, 'r', encoding='utf-8') as file:
-                data_json = [json.loads(line) for line in file if line.strip()]
-            trajs=data_synthesize(data_json)
-            for traj in trajs:
-                for datapoint in traj:
-                    gamestate, pacman_prob, pacman_reward, ghost_prob, ghost_reward, EATEN, GONE = datapoint
-                    input_tensor = state2tensor(gamestate)
-                    output_tensor_pacman = state2pacmanout(pacman_prob, pacman_reward)
-                    output_tensor_ghost = state2ghostout(ghost_prob, EATEN, GONE)
-                    dataset_pacman.append((input_tensor.squeeze(), output_tensor_pacman[:-1], output_tensor_pacman[-1]))
-                    dataset_ghost.append((input_tensor.squeeze(), output_tensor_ghost[:-1], output_tensor_ghost[-1]))
+    players = [
+        "98864c00-31b3-4b42-b244-fc8110618aef",
+        "15a594f0-bd1d-4138-808c-223a5d103724",
+    ]
+
+    for player in players:
+        for filename in os.listdir(json_dir+f"/{player}"):
+            if filename.endswith('.jsonl'):
+                file_path = os.path.join(json_dir+f"/{player}", filename)
+                with open(file_path, 'r') as file:
+                    data_json = [json.loads(line) for line in file if line.strip()]
+                trajs=data_synthesize(data_json)
+                for traj in trajs:
+                    for datapoint in traj:
+                        gamestate, pacman_prob, pacman_reward, ghost_prob, ghost_reward, EATEN, GONE = datapoint
+                        input_tensor = state2tensor(gamestate).to(torch.device("cpu"))
+                        output_tensor_pacman = state2pacmanout(pacman_prob, pacman_reward).to(torch.device("cpu"))
+                        output_tensor_ghost = state2ghostout(ghost_prob, EATEN, GONE).to(torch.device("cpu"))
+                        dataset_pacman.append((input_tensor.squeeze(), output_tensor_pacman[:-1], output_tensor_pacman[-1]))
+                        dataset_ghost.append((input_tensor.squeeze(), output_tensor_ghost[:-1], output_tensor_ghost[-1]))
 
     random.shuffle(dataset_pacman)
     random.shuffle(dataset_ghost)

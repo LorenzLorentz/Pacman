@@ -57,7 +57,7 @@ class BCTrainer:
                     v = v/200
                     target_values = target_values/200
                     # loss_policy = F.l1_loss(p, target_policies)
-                    loss_policy = F.kl_div(torch.log(p), target_policies, reduction="batchmean")
+                    loss_policy = F.kl_div(F.log_softmax(p, dim=1), target_policies, reduction="batchmean")
                     loss_value = F.mse_loss(v, target_values)
                     loss = loss_value + loss_policy
                 
@@ -107,7 +107,7 @@ class BCTrainer:
                     v = v/200
                     target_values = target_values/200
                     # loss_policy = F.l1_loss(p, target_policies)
-                    loss_policy = F.kl_div(torch.log(p), target_policies, reduction="batchmean")
+                    loss_policy = F.kl_div(torch.log_softmax(p, dim=1), target_policies, reduction="batchmean")
                     loss_value = F.mse_loss(v, target_values)
                     loss = loss_policy + loss_value
 
@@ -193,15 +193,15 @@ if __name__ == '__main__':
     logger = get_logger(name="PacmanLog", seed=SEED, log_file="log/train_bc_{}.log".format(datetime.datetime.now().strftime("%m%d%H%M")))
     # writer = SummaryWriter(log_dir="/root/tf-logs")
 
-    batch_size = 512
-    num_epochs = 200
+    batch_size = 1024
+    num_epochs = 400
 
     train_dataset_pacman = Dataset("data/train_dataset_pacman.pt")
     val_dataset_pacman = Dataset("data/val_dataset_pacman.pt")
     test_dataset_pacman = Dataset("data/test_dataset_pacman.pt")
-    train_loader_pacman = DataLoader(train_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
-    val_loader_pacman = DataLoader(val_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
-    test_loader_pacman = DataLoader(test_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    train_loader_pacman = DataLoader(train_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader_pacman = DataLoader(val_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    test_loader_pacman = DataLoader(test_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
     # train_dataset_ghost = Dataset("data/train_dataset_ghost.pt")
     # val_dataset_ghost = Dataset("data/val_dataset_ghost.pt")
@@ -210,7 +210,7 @@ if __name__ == '__main__':
     # val_loader_ghost = DataLoader(val_dataset_ghost, batch_size=batch_size, shuffle=True, num_workers=4)
     # test_loader_ghost = DataLoader(test_dataset_ghost, batch_size=batch_size, shuffle=True, num_workers=4)
     
-    pacman = PacmanAgent(load_series="03260720")
+    pacman = PacmanAgent()
     trainer = BCTrainer(pacman, train_loader_pacman, val_loader_pacman, test_loader_pacman, num_epochs=num_epochs)
     # trainer.test()
     trainer.train()
