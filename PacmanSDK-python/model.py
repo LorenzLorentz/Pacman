@@ -36,17 +36,14 @@ class ResidualBlock(nn.Module):
 class GlobalFeature(nn.Module):
     def __init__(self, in_channels=14, out_channels=512, num_res_blocks=6):
         super(GlobalFeature, self).__init__()
-        self.conv0 = nn.Conv2d(in_channels, out_channels//2, kernel_size=3, stride=2, padding=1)
-        self.bn0 = nn.BatchNorm2d(out_channels//2)
-        self.conv1 = nn.Conv2d(out_channels//2, out_channels, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(in_channels, out_channels//2, kernel_size=3, stride=2, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels//2)
+        self.conv2 = nn.Conv2d(out_channels//2, out_channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(out_channels)
         self.encoder = nn.Sequential(*[ResidualBlock(out_channels) for _ in range(num_res_blocks)])
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
     
     def forward(self, x):
-        x = F.relu(self.bn0(self.conv0(x)))
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = self.encoder(x)
@@ -55,18 +52,18 @@ class GlobalFeature(nn.Module):
         return x
 
 class LocalFeature(nn.Module):
-    def __init__(self, in_channels, out_channels=64, num_res_blocks=2, fc_out=128, local_size=5):
+    def __init__(self, in_channels, out_channels=128, num_res_blocks=2):
         super(LocalFeature, self).__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
         self.bn = nn.BatchNorm2d(out_channels)
-        self.res_blocks = nn.Sequential(*[ResidualBlock(out_channels) for _ in range(num_res_blocks)])
-        self.fc = nn.Linear(out_channels * local_size * local_size, fc_out)
+        self.encoder = nn.Sequential(*[ResidualBlock(out_channels) for _ in range(num_res_blocks)])
+        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
     
     def forward(self, x):
         x = F.relu(self.bn(self.conv(x)))
-        x = self.res_blocks(x)
+        x = self.encoder(x)
+        x = self.global_pool(x)
         x = x.view(x.size(0), -1)
-        x = F.relu(self.fc(x))
         return x
 
 class ExtraFeature(nn.Module):
@@ -87,7 +84,7 @@ class InputParser(nn.Module):
     def __init__(self,
                  board_embedding_num=10,
                  board_embedding_dim=14,
-                 extrainfo_embedding=8):
+                 extrainfo_embedding=7):
         super(InputParser, self).__init__()
 
         self.board_embedding = nn.Embedding(num_embeddings=board_embedding_num, embedding_dim=board_embedding_dim)
@@ -113,11 +110,9 @@ class ValueNet(nn.Module):
     def __init__(self, 
                  global_in_channels=14,
                  local_in_channels=5,
-                 extra_in_channels=8,
+                 extra_in_channels=7,
                  extra_in_features=7,
-                 board_size=42,
-                 local_size=7,
-                 global_filters=512,
+                 global_filters=256,
                  local_filters=128,
                  extra_out_features=64,
                  if_Pacman = True):
@@ -127,13 +122,17 @@ class ValueNet(nn.Module):
         
         self.parser = InputParser(board_embedding_dim=global_in_channels, extrainfo_embedding=extra_in_channels)
         
-        self.global_feature = GlobalFeature(in_channels=global_in_channels, out_channels=global_filters, num_res_blocks=6)
-        self.local_feature = LocalFeature(in_channels=local_in_channels, out_channels=local_filters, num_res_blocks=2, fc_out=128, local_size=local_size)
+        self.global_feature = GlobalFeature(in_channels=global_in_channels, out_channels=global_filters, num_res_blocks=4)
+        self.local_feature = LocalFeature(in_channels=local_in_channels, out_channels=local_filters, num_res_blocks=2)
         self.extra_feature = ExtraFeature(in_channels=extra_in_channels, in_features=extra_in_features, out_features=extra_out_features)
 
         combined_dim = global_filters + local_filters + extra_out_features
-        self.fc_combined = nn.Linear(combined_dim, global_filters)
-        self.bn_combined = nn.BatchNorm1d(global_filters)
+        self.bn_global = nn.BatchNorm1d(global_filters)
+        self.bn_local = nn.BatchNorm1d(local_filters)
+        self.bn_extra = nn.BatchNorm1d(extra_out_features)
+        self.fc1_combined = nn.Linear(combined_dim, global_filters)
+        self.bn1_combined = nn.BatchNorm1d(global_filters)
+        self.fc2_combined = nn.Linear(global_filters, global_filters)
         self.dropout = nn.Dropout(0.1)
         self.gelu = nn.GELU()
         
@@ -155,7 +154,10 @@ class ValueNet(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Embedding):
-                nn.init.uniform_(m.weight, -0.1, 0.1)
+                with torch.no_grad():
+                    one_hot = torch.eye(m.num_embeddings, m.embedding_dim)
+                    noise = torch.randn_like(one_hot) * 0.1
+                    m.weight.copy_(one_hot + noise)
         
     def forward(self, x):
         global_input, local_input, extra_input = self.parser(x)
@@ -169,13 +171,32 @@ class ValueNet(nn.Module):
         # extra_input shape: [batch, extra_in_channels, extra_in_features]
         ef = self.extra_feature(extra_input)    # [batch, extra_features]
 
+        gf = self.bn_global(gf)
+        lf = self.bn_local(lf)
+        ef = self.bn_extra(ef)
+
         combined = torch.cat([gf, lf, ef], dim=1)
-        combined = self.gelu(self.bn_combined(self.fc_combined(combined)))
+        combined = self.gelu(self.bn1_combined(self.fc1_combined(combined)))
         combined = self.dropout(combined)
+        combined = self.gelu(self.fc2_combined(combined))
+
+        if torch.isnan(gf).any() or torch.isinf(gf).any():
+            raise ValueError("NaN or Inf detected in global feature")
         
+        if torch.isnan(lf).any() or torch.isinf(lf).any():
+            raise ValueError("NaN or Inf detected in local feature")
+        
+        if torch.isnan(ef).any() or torch.isinf(ef).any():
+            raise ValueError("NaN or Inf detected in extra feature")
+        
+        if torch.isnan(combined).any() or torch.isinf(combined).any():
+            raise ValueError("NaN or Inf detected in combined")
+
+        # torch.clamp(self.policy_head(combined), min=-10, max=10)
         policy = F.softmax(self.policy_head(combined), dim=1)
+        
         value = self.value_head(combined)
-        if self.if_Pacman:
+        if not self.if_Pacman:
             value = F.tanh(value)
         
         return policy, value

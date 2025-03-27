@@ -13,14 +13,14 @@ def get_logger(name: str = "default_logger",
                backup_count: int = 5,
                console: bool = False,
                file_mode: str = "a"):
+    if seed:
+        name += f"_SEED={seed}"
+
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
     if logger.hasHandlers():
         logger.handlers.clear()
-
-    if seed:
-        name += f"SEED={seed}"
 
     formatter = logging.Formatter(fmt, datefmt)
 

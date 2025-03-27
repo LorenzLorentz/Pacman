@@ -3,3 +3,8 @@
 *.log
 *.pt
 *.pth
+*.jsonl
+fail_match.txt
+fail_offset.txt
+crawler_error.txt
+temp.txt

@@ -18,7 +18,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Dataset(Dataset):
     def __init__(self, data_path):
-        self.data = torch.load(data_path, weights_only=True)
+        self.data = torch.load(data_path, weights_only=True, map_location="cpu")
 
     def __len__(self):
         return len(self.data)
@@ -47,19 +47,19 @@ class BCTrainer:
             
             for batch in self.train_loader:
                 inputs, target_policies, target_values = batch
-                inputs.to(device)
-                target_policies.to(device)
-                target_values.to(device)
+                inputs = inputs.to(device)
+                target_policies = target_policies.to(device)
+                target_values = target_values.to(device)
 
                 with autocast("cuda"):
                     p, v = self.agent.ValueNet(inputs)
                     v = v.squeeze(1)
                     v = v/200
                     target_values = target_values/200
-                    loss_policy = F.l1_loss(p, target_policies)
-                    # loss_policy = F.kl_div(torch.log(p), target_policies, reduction="batchmean")
+                    # loss_policy = F.l1_loss(p, target_policies)
+                    loss_policy = F.kl_div(torch.log(p), target_policies, reduction="batchmean")
                     loss_value = F.mse_loss(v, target_values)
-                    loss = loss_policy + loss_value
+                    loss = loss_value + loss_policy
                 
                 self.agent.optimizer.zero_grad()
                 torch.autograd.set_detect_anomaly(True)
@@ -97,17 +97,17 @@ class BCTrainer:
         with torch.no_grad():
             for batch in self.val_loader:
                 inputs, target_policies, target_values = batch
-                inputs.to(device)
-                target_policies.to(device)
-                target_values.to(device)
+                inputs = inputs.to(device)
+                target_policies = target_policies.to(device)
+                target_values = target_values.to(device)
 
                 with autocast("cuda"):
                     p, v = self.agent.ValueNet(inputs)
                     v = v.squeeze(1)
                     v = v/200
                     target_values = target_values/200
-                    loss_policy = F.l1_loss(p, target_policies)
-                    # loss_policy = F.kl_div(torch.log(p), target_policies, reduction="batchmean")
+                    # loss_policy = F.l1_loss(p, target_policies)
+                    loss_policy = F.kl_div(torch.log(p), target_policies, reduction="batchmean")
                     loss_value = F.mse_loss(v, target_values)
                     loss = loss_policy + loss_value
 
@@ -129,7 +129,7 @@ class BCTrainer:
     def test(self):
         self.agent.ValueNet.eval()
 
-        is_pacman = (self.agent.ValueNet.policy_fc.out_features==5)
+        is_pacman = self.agent.ValueNet.if_Pacman
         
         total_v_error = 0.0
         total_p_error = 0.0
@@ -139,9 +139,9 @@ class BCTrainer:
         with torch.no_grad():
             for batch in self.test_loader:
                 inputs, target_policies, target_values = batch
-                inputs.to(device)
-                target_policies.to(device)
-                target_values.to(device)
+                inputs = inputs.to(device)
+                target_policies = target_policies.to(device)
+                target_values = target_values.to(device)
 
                 with autocast("cuda"):
                     p, v = self.agent.ValueNet(inputs)
@@ -188,7 +188,7 @@ class BCTrainer:
         logger.info(f"Test: Prob acc: {1-total_p_error/num_points}, Value acc: {1-total_v_error/num_points}")
 
 if __name__ == '__main__':
-    SEED = 3407
+    SEED = 42
     set_seed(SEED)
     logger = get_logger(name="PacmanLog", seed=SEED, log_file="log/train_bc_{}.log".format(datetime.datetime.now().strftime("%m%d%H%M")))
     # writer = SummaryWriter(log_dir="/root/tf-logs")
@@ -199,9 +199,9 @@ if __name__ == '__main__':
     train_dataset_pacman = Dataset("data/train_dataset_pacman.pt")
     val_dataset_pacman = Dataset("data/val_dataset_pacman.pt")
     test_dataset_pacman = Dataset("data/test_dataset_pacman.pt")
-    train_loader_pacman = DataLoader(train_dataset_pacman, batch_size=batch_size, shuffle=True) # , num_workers=4)
-    val_loader_pacman = DataLoader(val_dataset_pacman, batch_size=batch_size, shuffle=True) # , num_workers=4)
-    test_loader_pacman = DataLoader(test_dataset_pacman, batch_size=batch_size, shuffle=True) # , num_workers=4)
+    train_loader_pacman = DataLoader(train_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    val_loader_pacman = DataLoader(val_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    test_loader_pacman = DataLoader(test_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
 
     # train_dataset_ghost = Dataset("data/train_dataset_ghost.pt")
     # val_dataset_ghost = Dataset("data/val_dataset_ghost.pt")
@@ -210,7 +210,7 @@ if __name__ == '__main__':
     # val_loader_ghost = DataLoader(val_dataset_ghost, batch_size=batch_size, shuffle=True, num_workers=4)
     # test_loader_ghost = DataLoader(test_dataset_ghost, batch_size=batch_size, shuffle=True, num_workers=4)
     
-    pacman = PacmanAgent()
+    pacman = PacmanAgent(load_series="03260720")
     trainer = BCTrainer(pacman, train_loader_pacman, val_loader_pacman, test_loader_pacman, num_epochs=num_epochs)
     # trainer.test()
     trainer.train()
