@@ -4,11 +4,12 @@ from utils.PacmanEnvDecorator import *
 from utils.state_dict_to_tensor import *
 
 from model import *
-from mcts import *
-from alpha_zero import *
+# from mcts import *
+# from alpha_zero import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+"""
 def test():
     env=PacmanEnvDecorator()
     env.reset(mode="local")
@@ -91,6 +92,7 @@ def test():
     trainer.train()
     t=time.time()-t
     print(f"time:{t}")
+"""
 
 class Pacman_zero:
     def __init__(self):
@@ -98,13 +100,16 @@ class Pacman_zero:
         self.env.reset()
         self.c_puct=2.5
         self.search_time=4
-        self.pacman=PacmanAgent(series='03091346')
-        self.ghost=GhostAgent(series='03091346')
+        self.pacman=PacmanAgent(load_series='03280537')
+        # self.ghost=GhostAgent(series='03280537')
 
     def __call__(self, state):
-        self.env.restore(state)
-        mcts=MCTS(self.env, self.pacman, self.ghost, self.c_puct, num_simulations=self.search_time)
-        return mcts.play_game_pacman()
+        action, prob, value = self.pacman.predict(self.env.game_state())
+        return action
+
+        # self.env.restore(state)
+        # mcts=MCTS(self.env, self.pacman, self.ghost, self.c_puct, num_simulations=self.search_time)
+        # return mcts.play_game_pacman()
 
 ai_func=Pacman_zero()
 __all__ = ["ai_func"]

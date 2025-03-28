@@ -348,18 +348,23 @@ class PacmanAgent(Agent):
         # input: state as type: gamestate
         # output: selected_action, action_prob, value
         # in mcts version, actual selected_action is decided other way
+        self.ValueNet.eval()
+
         pos = state.gamestate_to_statedict()["pacman_coord"]
         legal_action = get_valid_moves_pacman(pos, state)
 
-        act_probs, value = self.ValueNet(state2tensor(state))
-        
-        act_probs = act_probs.squeeze()
-        value = value.squeeze()
+        with torch.no_grad():
+            with torch.autocast("cuda"):
+                act_probs, value = self.ValueNet(state2tensor(state))
+            
+            act_probs = torch.softmax(act_probs, dim=1)
+            act_probs = act_probs.squeeze()
+            value = value.squeeze()
 
-        act_probs_legal=torch.zeros_like(act_probs)
-        act_probs_legal[legal_action]=act_probs[legal_action]
+            act_probs_legal=torch.zeros_like(act_probs)
+            act_probs_legal[legal_action]=act_probs[legal_action]
 
-        selected_action = torch.multinomial(act_probs_legal, 1).item()
+            selected_action = torch.multinomial(act_probs_legal, 1).item()
 
         return selected_action, act_probs_legal, value
     

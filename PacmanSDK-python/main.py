@@ -1,8 +1,8 @@
 import json
 import sys
 
-from ai_dqn import *
-# from ai_zero import *
+# from ai_dqn import *
+from ai_zero import *
 # from ai_rl import PacmanAI
 from ai_to_judger import ghost_to_judger, pacman_to_judger
 from core.gamedata import GameState
