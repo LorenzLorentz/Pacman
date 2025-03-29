@@ -117,7 +117,7 @@ class MCTSNode:
         return np.random.choice(legal_actions)
 
 class MCTS:
-    def __init__(self, env:PacmanEnvDecorator, agent:Agent, otheragent:Agent, c_puct:float, n_simulations:int, n_search:int, temp:float, det:bool=True):
+    def __init__(self, env:PacmanEnvDecorator, agent:Agent, otheragent:Agent, c_puct:float, n_search:int, temp:float, det:bool=True):
         self.env=copy.deepcopy(env)
         self.agent=agent
         self.otheragent=otheragent
@@ -125,7 +125,6 @@ class MCTS:
         self.det=det
 
         self.c_puct=c_puct
-        self.n_simulations=n_simulations
         self.n_search=n_search
         self.inv_temp=temp
 
@@ -182,15 +181,15 @@ class MCTS:
         raise NotImplementedError
 
 class MCTS_pacman(MCTS):
-    def __init__(self, env:PacmanEnvDecorator, pacman:Agent, ghost:Agent, c_puct:float, n_simulations:int, n_search:int, temp:float=1, det:bool=True):
-        super().__init__(env=env, agent=pacman, otheragent=ghost, c_puct=c_puct, n_simulations=n_simulations, n_search=n_search, temp=temp, det=det)
+    def __init__(self, env:PacmanEnvDecorator, pacman:Agent, ghost:Agent, c_puct:float, n_search:int, temp:float=1, det:bool=True):
+        super().__init__(env=env, agent=pacman, otheragent=ghost, c_puct=c_puct, n_search=n_search, temp=temp, det=det)
 
     def get_terminal_value(self) -> float:
         return float(self.env.game_state().pacman_score)
 
 class MCTS_ghost(MCTS):
-    def __init__(self, env:PacmanEnvDecorator, ghost:Agent, pacman:Agent, c_puct:float, n_simulations:int, n_search:int, temp:float=1, det:bool=True):
-        super().__init__(env=env, agent=ghost, otheragent=pacman, c_puct=c_puct, n_simulations=n_simulations, n_search=n_search, temp=temp, det=det)
+    def __init__(self, env:PacmanEnvDecorator, ghost:Agent, pacman:Agent, c_puct:float, n_search:int, temp:float=1, det:bool=True):
+        super().__init__(env=env, agent=ghost, otheragent=pacman, c_puct=c_puct, n_search=n_search, temp=temp, det=det)
     
     def get_terminal_value(self) -> float:
         return float(self.env.is_eaten()) - 2*int(self.env.is_gone())
@@ -204,7 +203,7 @@ if __name__ == "__main__":
     ghost = GhostAgent()
     
     t= time.time()
-    mcts = MCTS_pacman(env=env, pacman=pacman, ghost=ghost, c_puct=2.5, n_simulations=10, n_search=10)
+    mcts = MCTS_pacman(env=env, pacman=pacman, ghost=ghost, c_puct=2.5, n_search=10)
     action, prob, value = mcts.run()
     t = time.time()-t
     

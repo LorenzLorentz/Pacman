@@ -19,7 +19,7 @@ from train_bc import *
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class AlphaZeroTrainer:
-    def __init__(self, env:PacmanEnv, pacman:Agent, ghost:Agent, c_puct:int, n_simulations:int, n_search:int, temp:float, iterations:int, episodes:int, logger:logging=None, writer:SummaryWriter=None):
+    def __init__(self, env:PacmanEnv, pacman:Agent, ghost:Agent, c_puct:int, n_search:int, temp:float, iterations:int, episodes:int, logger:logging=None, writer:SummaryWriter=None):
         self.env=PacmanEnvDecorator(env)
 
         self.pacman=pacman
@@ -29,7 +29,6 @@ class AlphaZeroTrainer:
         self.iterations=iterations
         
         self.c_puct=c_puct
-        self.n_simulations=n_simulations
         self.n_search=n_search
         self.temp=temp
 
@@ -37,8 +36,8 @@ class AlphaZeroTrainer:
         self.writter=writer
 
     def decide(self):
-        mcts_pacman = MCTS(self.env, self.pacman, self.ghost, self.c_puct, self.n_simulations, self.n_search, self.temp, det=False)
-        mcts_ghost = MCTS(self.env, self.ghost, self.pacman, self.c_puct, self.n_simulations, self.n_search, self.temp, det=False)
+        mcts_pacman = MCTS_pacman(env=self.env, pacman=self.pacman, ghost=self.ghost, c_puct=self.c_puct, n_search=self.n_simulations, temp=self.temp, det=False)
+        mcts_ghost = MCTS_ghost(env=self.env, ghost=self.ghost,pacman=self.pacman, c_puct=self.c_puct, n_search=self.n_search, temp=self.temp, det=False)
 
         return mcts_pacman.run(), mcts_ghost.run()
 
@@ -138,7 +137,7 @@ if __name__ == "__main__":
     pacman=PacmanAgent()
     ghost=GhostAgent()
 
-    SEARCH_TIME=32
-    trainer = AlphaZeroTrainer(env=env, pacman=pacman, ghost=ghost, c_puct=2.5, n_simulations=10, n_search=SEARCH_TIME, temp=1, iterations=100, episodes=10)
+    SEARCH_TIME=10
+    trainer = AlphaZeroTrainer(env=env, pacman=pacman, ghost=ghost, c_puct=2.5, n_search=SEARCH_TIME, temp=1, iterations=100, episodes=10)
 
     trainer.pipeline()
