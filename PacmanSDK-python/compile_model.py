@@ -4,7 +4,6 @@ import time
 
 from model import *
 
-
 def compile(load_series):
     model = ValueNet(if_Pacman=True)
     load_name = f"model/pacman_{load_series}.pth"
