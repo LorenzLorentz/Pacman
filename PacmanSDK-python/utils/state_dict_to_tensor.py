@@ -121,8 +121,12 @@ def state2tensor(state:GameState) -> torch.tensor:
 
     state_arrays = [board, extra]
     state_stacked = np.stack(state_arrays, axis=0)
-    state_tensor = torch.tensor(state_stacked, dtype=torch.float16, device=device).unsqueeze(0)
 
+    if torch.cuda.is_available():
+        state_tensor = torch.tensor(state_stacked, dtype=torch.float16, device=device).unsqueeze(0)
+    else:
+        state_tensor = torch.tensor(state_stacked, dtype=torch.float32, device=device).unsqueeze(0)
+    
     return state_tensor
 
 def state2pacmanout(prob:torch.tensor, reward:float) -> torch.tensor:

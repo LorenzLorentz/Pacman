@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 import torch.utils.data.dataloader
 from torch.utils.tensorboard import SummaryWriter
 import datetime
@@ -12,22 +12,10 @@ from core.gamedata import *
 from model import *
 from data import *
 
-logger = None
-writer = None
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class Dataset(Dataset):
-    def __init__(self, data_path):
-        self.data = torch.load(data_path, weights_only=True, map_location="cpu")
-
-    def __len__(self):
-        return len(self.data)
-    
-    def __getitem__(self, idx):
-        return self.data[idx]
-
 class BCTrainer:
-    def __init__(self, agent:Agent, train_loader:torch.utils.data.DataLoader, val_loader:torch.utils.data.DataLoader, test_loader:torch.utils.data.DataLoader, num_epochs:int=10, num_test:int=5):
+    def __init__(self, agent:Agent, train_loader:torch.utils.data.DataLoader, val_loader:torch.utils.data.DataLoader, test_loader:torch.utils.data.DataLoader, num_epochs:int=10, num_test:int=5, logger:logging=None, writer:SummaryWriter=None):
         self.agent = agent
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -36,6 +24,9 @@ class BCTrainer:
         self.num_test = num_test
 
         self.best_acc =0.0
+
+        self.logger = logger
+        self.writter = writer
 
     def train(self):
         self.agent.ValueNet.train()
@@ -75,12 +66,10 @@ class BCTrainer:
             # self.writer.add_scalar("TrainLoss/Total", total_loss/num_batches)
             # self.writer.add_scalar("TrainLoss/Policy", total_policy_loss/num_batches)
             # self.writer.add_scalar("TrainLoss/Value", total_value_loss/num_batches)
-
-            # print(f"Epoch {epoch+1}/{self.num_epochs}, Loss: {total_loss/num_batches:.4f}, "
-            #       f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
             
-            logger.info(f"Epoch {epoch+1}/{self.num_epochs}, Loss: {total_loss/num_batches:.4f}, "
-                  f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
+            if self.logger:
+                self.logger.info(f"Epoch {epoch+1}/{self.num_epochs}, Loss: {total_loss/num_batches:.4f}, "
+                    f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
             
             self.validate(epoch)
 
@@ -119,12 +108,10 @@ class BCTrainer:
         # self.writer.add_scalar("ValLoss/Total", total_loss/num_batches)
         # self.writer.add_scalar("ValLoss/Policy", total_policy_loss/num_batches)
         # self.writer.add_scalar("ValLoss/Value", total_value_loss/num_batches)
-
-        # print(f"Validation Epoch {epoch+1}: Loss: {total_loss/num_batches:.4f}, "
-        #         f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
         
-        logger.info(f"Validation Epoch {epoch+1}: Loss: {total_loss/num_batches:.4f}, "
-                f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
+        if self.logger:
+            self.logger.info(f"Validation Epoch {epoch+1}: Loss: {total_loss/num_batches:.4f}, "
+                    f"Policy Loss: {total_policy_loss/num_batches:.4f}, Value Loss: {total_value_loss/num_batches:.4f}")
     
     def test(self):
         self.agent.ValueNet.eval()
@@ -183,9 +170,8 @@ class BCTrainer:
             self.agent.save_model()
             self.best_acc = 0.7*(p_acc-0.2) + 0.3*v_acc
                 
-        # print(f"Test: Prob acc: {1-total_p_error/num_points}, Value acc: {1-total_v_error/num_points}")
-
-        logger.info(f"Test: Prob acc: {1-total_p_error/num_points}, Value acc: {1-total_v_error/num_points}")
+        if self.logger:
+            logger.info(f"Test: Prob acc: {1-total_p_error/num_points}, Value acc: {1-total_v_error/num_points}")
 
 if __name__ == '__main__':
     SEED = 42
@@ -196,23 +182,22 @@ if __name__ == '__main__':
     batch_size = 1024
     num_epochs = 400
 
-    train_dataset_pacman = Dataset("data/train_dataset_pacman.pt")
-    val_dataset_pacman = Dataset("data/val_dataset_pacman.pt")
-    test_dataset_pacman = Dataset("data/test_dataset_pacman.pt")
+    train_dataset_pacman = PacmanDataset("data/train_dataset_pacman.pt")
+    val_dataset_pacman = PacmanDataset("data/val_dataset_pacman.pt")
+    test_dataset_pacman = PacmanDataset("data/test_dataset_pacman.pt")
     train_loader_pacman = DataLoader(train_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
     val_loader_pacman = DataLoader(val_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
     test_loader_pacman = DataLoader(test_dataset_pacman, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
-    # train_dataset_ghost = Dataset("data/train_dataset_ghost.pt")
-    # val_dataset_ghost = Dataset("data/val_dataset_ghost.pt")
-    # test_dataset_ghost = DataLoader("data/test_data_ghost.pt")
+    # train_dataset_ghost = PacmanDataset("data/train_dataset_ghost.pt")
+    # val_dataset_ghost = PacmanDataset("data/val_dataset_ghost.pt")
+    # test_dataset_ghost = PacmanDataset("data/test_data_ghost.pt")
     # train_loader_ghost = DataLoader(train_dataset_ghost, batch_size=batch_size, shuffle=True, num_workers=4)
     # val_loader_ghost = DataLoader(val_dataset_ghost, batch_size=batch_size, shuffle=True, num_workers=4)
     # test_loader_ghost = DataLoader(test_dataset_ghost, batch_size=batch_size, shuffle=True, num_workers=4)
     
     pacman = PacmanAgent()
-    trainer = BCTrainer(pacman, train_loader_pacman, val_loader_pacman, test_loader_pacman, num_epochs=num_epochs)
-    # trainer.test()
+    trainer = BCTrainer(pacman, train_loader_pacman, val_loader_pacman, test_loader_pacman, num_epochs=num_epochs, logger=logger)
     trainer.train()
     pacman.save_model()
 

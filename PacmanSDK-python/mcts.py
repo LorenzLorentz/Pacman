@@ -51,7 +51,7 @@ class MCTSNode:
         
         with torch.no_grad():
             state_tensor = state2tensor(self.state)
-            selected_action, action_probs, value = self.agent.predict(state_tensor)
+            selected_action, action_probs, value = self.agent.predict(self.state)
 
         self.P = action_probs.cpu().numpy()
         self.expanded = True
@@ -103,6 +103,10 @@ class MCTSNode:
         self.Q = self.W / self.N
 
     def _select_opponent_action(self) -> int:
+        # idea 2: 使用对手的mcts或者纯神经网络
+        selected_action, _, _ = self.otheragent.predict(self.state)
+        return selected_action
+
         # idea 1: 随机选择
         if self.is_pacman():
             pos = self.state.gamestate_to_statedict()["ghosts_coord"]
@@ -112,13 +116,9 @@ class MCTSNode:
             legal_actions = get_valid_moves_pacman(pos, self.state)
         return np.random.choice(legal_actions)
 
-        # idea 2: 使用对手的mcts或者纯神经网络
-        selected_action, _, _ = self.otheragent(self.state)
-        return selected_action
-
 class MCTS:
-    def __init__(self, env:PacmanEnv, agent:Agent, otheragent:Agent, c_puct:float, n_simulations:int, n_search:int, temp:float, det:bool=True):
-        self.env=PacmanEnvDecorator(copy.deepcopy(env))
+    def __init__(self, env:PacmanEnvDecorator, agent:Agent, otheragent:Agent, c_puct:float, n_simulations:int, n_search:int, temp:float, det:bool=True):
+        self.env=copy.deepcopy(env)
         self.agent=agent
         self.otheragent=otheragent
         
@@ -145,7 +145,7 @@ class MCTS:
 
     def run(self) -> tuple[int, torch.tensor, float]:
         self.root=MCTSNode(self.env, self.agent, self.otheragent, done=False)
-        for _ in self.n_search:
+        for _ in range(self.n_search):
             value = self.search(self.root)
         selected_action, prob = self.decide()
         return selected_action, prob, value
@@ -154,12 +154,14 @@ class MCTS:
         visits=torch.zeros(self.root.action_dim, device=device, dtype=torch.float32)
         sum_visits=0.0
         
+        state = self.env.game_state()
+
         if self.root.is_pacman():
-            pos = self.state.gamestate_to_statedict()["pacman_coord"]
-            legal_actions = get_valid_moves_pacman(pos, self.state)
+            pos = state.gamestate_to_statedict()["pacman_coord"]
+            legal_actions = get_valid_moves_pacman(pos, state)
         else:
-            pos = self.state.gamestate_to_statedict()["ghosts_coord"]
-            legal_actions = get_valid_moves_ghost(pos, self.state)
+            pos = state.gamestate_to_statedict()["ghosts_coord"]
+            legal_actions = get_valid_moves_ghost(pos, state)
         
         for action in legal_actions:
             node = self.root.children[action]
@@ -180,15 +182,31 @@ class MCTS:
         raise NotImplementedError
 
 class MCTS_pacman(MCTS):
-    def __init__(self, env:PacmanEnv, pacman:PacmanAgent, ghost:GhostAgent, c_puct:float, n_simulations:int, n_search:int, det:bool=True):
-        super().__init__(env=env, agent=pacman, otheragent=ghost, c_puct=c_puct, n_simulations=n_simulations, n_search=n_search, det=det)
+    def __init__(self, env:PacmanEnvDecorator, pacman:Agent, ghost:Agent, c_puct:float, n_simulations:int, n_search:int, temp:float=1, det:bool=True):
+        super().__init__(env=env, agent=pacman, otheragent=ghost, c_puct=c_puct, n_simulations=n_simulations, n_search=n_search, temp=temp, det=det)
 
     def get_terminal_value(self) -> float:
         return float(self.env.game_state().pacman_score)
 
 class MCTS_ghost(MCTS):
-    def __init__(self, env:PacmanEnv, ghost:GhostAgent, pacman:PacmanAgent, c_puct:float, n_simulations:int, n_search:int, det:bool=True):
-        super().__init__(env=env, agent=ghost, otheragent=pacman, c_puct=c_puct, n_simulations=n_simulations, n_search=n_search, det=det)
+    def __init__(self, env:PacmanEnvDecorator, ghost:Agent, pacman:Agent, c_puct:float, n_simulations:int, n_search:int, temp:float=1, det:bool=True):
+        super().__init__(env=env, agent=ghost, otheragent=pacman, c_puct=c_puct, n_simulations=n_simulations, n_search=n_search, temp=temp, det=det)
     
     def get_terminal_value(self) -> float:
         return float(self.env.is_eaten()) - 2*int(self.env.is_gone())
+    
+if __name__ == "__main__":
+    import time
+
+    env = PacmanEnvDecorator()
+    env.reset()
+    pacman = PacmanAgent(load_series="03290333")
+    ghost = GhostAgent()
+    
+    t= time.time()
+    mcts = MCTS_pacman(env=env, pacman=pacman, ghost=ghost, c_puct=2.5, n_simulations=10, n_search=10)
+    action, prob, value = mcts.run()
+    t = time.time()-t
+    
+    print(t)
+    print(action, prob, value)

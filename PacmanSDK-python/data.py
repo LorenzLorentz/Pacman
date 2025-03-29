@@ -4,11 +4,21 @@ import random
 import numpy as np
 import torch
 from gym import spaces
+from torch.utils.data import Dataset
 
 from core.gamedata import *
 from model import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+class PacmanDataset(Dataset):
+    def __init__(self, data_path):
+        self.data = torch.load(data_path, weights_only=True, map_location="cpu")
+
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        return self.data[idx]
 
 def get_action(last_coord, current_coord):
     dx = current_coord[0] - last_coord[0]

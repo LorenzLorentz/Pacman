@@ -72,6 +72,25 @@ class PPO:
         advantages.reverse()
         return torch.tensor(advantages, device=device, dtype=torch.float32).squeeze()
     
+    def update(self, agent:Agent, states_tensor:torch.tensor, legal_actions_mask:torch.tensor, old_prob, actions, td_target, advantages, eps):
+        with autocast('cuda'):
+        # with autocast():
+            _, new_prob, new_values=agent.predict_batch(states_tensor, legal_actions_mask)
+            new_prob=new_prob.gather(1, actions.unsqueeze(1)).squeeze(1)
+            ratio=new_prob/old_prob
+
+            loss_actor=-torch.mean(torch.min(ratio*advantages, torch.clamp(ratio, 1-eps, 1+eps)*advantages))
+            loss_critic=F.mse_loss(td_target, new_values.squeeze())
+            
+            loss=loss_actor+loss_critic
+
+        agent.optimizer.zero_grad()
+        agent.scaler.scale(loss).backward()
+        agent.scaler.step(agent.optimizer)
+        agent.scaler.update()
+
+        print(f"    loss_{agent.name()}:{loss}")
+    
     def train_step(self):
         states, actions_pacman, actions_ghost, values_pacman, next_values_pacman, values_ghost, next_values_ghost, rewards_pacman, rewards_ghost, dones = self.play()
         
@@ -108,8 +127,11 @@ class PPO:
         
         for _ in range(self.UPDATE_EPOCH):
             print(f"  update epoch:{_}")
-            self.pacman.ppo_train(states_tensor, legal_actions_mask_pacman, old_prob_pacman, actions_pacman, td_target_pacman, advantages_pacman, self.EPS)
-            self.ghost.ppo_train(states_tensor, legal_actions_mask_ghost, old_prob_ghost, actions_ghost, td_target_pacman, advantages_ghost, self.EPS)
+            self.update(self.pacman, states_tensor, legal_actions_mask_pacman, old_prob_pacman, actions_pacman, td_target_pacman, advantages_pacman, self.EPS)
+            self.update(self.ghost, states_tensor, legal_actions_mask_pacman, old_prob_pacman, actions_pacman, td_target_pacman, advantages_pacman, self.EPS)
+            
+            # self.pacman.ppo_train(states_tensor, legal_actions_mask_pacman, old_prob_pacman, actions_pacman, td_target_pacman, advantages_pacman, self.EPS)
+            # self.ghost.ppo_train(states_tensor, legal_actions_mask_ghost, old_prob_ghost, actions_ghost, td_target_pacman, advantages_ghost, self.EPS)
         # self.pacman.save_model()
         # self.ghost.save_model()
 

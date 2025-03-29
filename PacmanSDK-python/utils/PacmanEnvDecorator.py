@@ -2,7 +2,7 @@ from core.GymEnvironment import *
 from utils.ghostact_int2list import *
 
 class PacmanEnvDecorator:
-    def __init__(self, env=None):
+    def __init__(self, env:PacmanEnv=None):
         if env:
             self.env=env
         else:
@@ -11,7 +11,7 @@ class PacmanEnvDecorator:
     def reset(self, mode="local"):
         self.env.reset(mode=mode)
 
-    def restore(self, state):
+    def restore(self, state:GameState):
         self.env.ai_reset(state.gamestate_to_statedict())
 
     def step(self, pacmanAction, ghostAction, state=None):
