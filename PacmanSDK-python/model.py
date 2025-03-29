@@ -305,7 +305,7 @@ class Agent:
 
     def init_weight(self, model:ValueNet, load_name:str=None) -> None:
         if load_name:
-            model.load_state_dict(torch.load(name, map_location=device, weights_only=True))
+            model.load_state_dict(torch.load(load_name, map_location=device, weights_only=True))
             return
         if self.load_series:
             name = f"model/{self.name()}_{self.load_series}.pth"
