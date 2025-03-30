@@ -1,0 +1,7 @@
+.vscode/
+test.py
+**/__pycache__/
+replay/
+board_copy.py
+test_1.py
+.DS_Store
