@@ -11,13 +11,28 @@ class Pacman:
         self._level = 1
         self._board_size = 20
         self._portal_coord = np.array([-1, -1])
+        self._invulnerable_time = 0
+        self._eaten_bean_count = 0
+
+    def invulnerable(self):
+        return self._invulnerable_time > 0
+
+    def set_invulnerable_time(self, time=1):
+        self._invulnerable_time = time
+        
+    def decrease_invulnerable_time(self):
+        self._invulnerable_time -= 1
 
     def update_bonus(self, points):
         self._score += points
         return points
 
     def update_score(self, points):
-        reward = 2 * points if self._skill_status_current[Skill.DOUBLE_SCORE.value] > 0 else points
+        reward = (
+            2 * points
+            if self._skill_status_current[Skill.DOUBLE_SCORE.value] > 0
+            else points
+        )
         self._score += reward
         return reward
 
@@ -28,10 +43,12 @@ class Pacman:
 
         if board[x][y] == Space.REGULAR_BEAN.value:
             board[x][y] = Space.EMPTY.value
+            self._eaten_bean_count += 1
             reward += self.update_score(1)
 
         elif board[x][y] == Space.BONUS_BEAN.value:
             board[x][y] = Space.EMPTY.value
+            self._eaten_bean_count += 1
             reward += self.update_score(2)
 
         elif board[x][y] == Space.SPEED_BEAN.value:
@@ -49,7 +66,7 @@ class Pacman:
         elif board[x][y] == Space.DOUBLE_BEAN.value:
             board[x][y] = Space.EMPTY.value
             self.acquire_skill(Skill.DOUBLE_SCORE)
-            
+
         elif board[x][y] == Space.FROZE_BEAN.value:
             board[x][y] = Space.EMPTY.value
             self.acquire_skill(Skill.FROZE)
@@ -79,7 +96,7 @@ class Pacman:
             self._skill_status[skill_index.value] = DEFAULT_SKILL_TIME[
                 skill_index.value
             ]
-    
+
     def update_current_skill(self):
         self._skill_status_current = self._skill_status.copy()
 
@@ -130,3 +147,9 @@ class Pacman:
     def clear_skills(self):
         self._skill_status = [0, 0, 0, 0, 0]
         self._skill_status_current = [0, 0, 0, 0, 0]
+        
+    def reset_eaten_bean_count(self):
+        self._eaten_bean_count = 0
+
+    def get_eaten_bean_count(self):
+        return self._eaten_bean_count

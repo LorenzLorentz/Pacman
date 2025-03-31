@@ -69,6 +69,5 @@ class Controller:
 
 
 if __name__ == "__main__":
-    print("init done", file=sys.stderr)
     controller = Controller()
     controller.run(ai_func_ghost)
