@@ -193,7 +193,5 @@ class GhostAI:
 
         return moves
 
-# TODO: 你需要实现一个ai函数
-
-ai_func = GhostAI().choose_moves # TODO: 你需要把ai_func替换为自己的ai函数
+ai_func_ghost = GhostAI().choose_moves
 __all__ = ["ai_func"]
