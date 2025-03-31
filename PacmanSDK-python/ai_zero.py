@@ -18,7 +18,7 @@ class Pacman_zero:
 
     def __call__(self, state):
         self.env.restore(state=state)
-        mcts = MCTS_pacman(self.env, pacman=self.pacman, ghost=self.ghost, c_puct=1.5, n_search=5)
+        mcts = MCTS_pacman(self.env, pacman=self.pacman, ghost=self.ghost, c_puct=1.5, n_search=3)
         action, _, _ = mcts.run()
         return [action]
     

@@ -196,6 +196,3 @@ class GhostAI:
     def predict(self, game_state: GameState):
         move_list = self.choose_moves(game_state)
         return move_list[0] + move_list[1]*5 + move_list[2]*25
-
-ai_func_ghost = GhostAI().choose_moves
-__all__ = ["ai_func"]

@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler # When upload
 # from torch.cuda.amp import autocast, GradScaler
 
 from core.gamedata import *
@@ -211,9 +211,9 @@ class Agent:
         self.ValueNet=ValueNet(if_Pacman=is_pacman)
         self.optimizer=optim.Adam(self.ValueNet.parameters(), lr=1e-5)
         # self.optimizer=optim.SGD(self.ValueNet.parameters(), lr=5e-2)
-        if torch.cuda.is_available():
+        if torch.cuda.is_available(): # When upload
             self.scaler = GradScaler('cuda')
-         # self.scaler = GradScaler()
+        # self.scaler = GradScaler()
         
         self.init_weight(self.ValueNet)
         self.ValueNet.to(device)

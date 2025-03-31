@@ -194,4 +194,16 @@ class GhostAI:
         return moves
 
 ai_func_ghost = GhostAI().choose_moves
-__all__ = ["ai_func"]
+__all__ = ["ai_func_ghost"]
+
+if __name__ == "__main__":
+    from core.GymEnvironment import *
+    env=PacmanEnv()
+    env.reset()
+    state=env.game_state()
+    
+    import time
+    t=time.time()
+    out=ai_func_ghost(state)
+    t=time.time()-t
+    print(out, t)
